@@ -34,63 +34,6 @@ It allows programmers to write real code and prove that it satisfies safety, sec
    - `services` – The spec of the single node state machine.
    - `main.rs` -  The main entry.
 
-## What you should do?
-This project follows IronFleet's two-level refinement approach for verifying distributed protocols. The architecture is divided into three layers:
-
-Service layer (abstract spec) – ✅ Already provided
-
-Protocol layer (refined distributed protocol spec) – 🧩 Partially provided
-
-Implementation layer (concrete executable code) – 🧩 Partially provided
-
-You will complete the missing parts in the protocol and implementation layers.
-
-Specifically, you will implement and verify:
-
-`acceptor`
-
-`election`
-
-`proposer`
-
-Each missing function already has its signature defined — you only need to fill in the function body and prove your implementation code refines the specifications in protocol layer.
-
-
-## How to do it?
-You can do it in three main steps:
-
-*Step 1: Implement the Protocol Layer*
-
-The protocol layer defines the system behavior in terms of specification functions. These functions are written using `spec fn`, which are non-executable and describe logical behavior only.
-
-- For each missing `spec fn` in `src/protocol/RSL/`, locate its corresponding `predicate` or `function` in the original IronFleet Dafny code.
-
-- Translate the Dafny code into Verus `spec fn`.
-
-- These `spec fn` serve as the reference model to which the implementation must conform.
-
-
-*Step 2: Implement the Implementation Layer*
-
-The implementation layer contains the executable code for the system. Each  action in protocol layer should be implemented as a Verus `fn`.
-
-- For each `spec fn` you've defined, find the matching `fn` in `src/implementation/RSL/`.
-
-- Implement the logic inside the function to reflect the protocol’s intent.
-
-- Use Verus’s ensures clause to express that the function refines the `spec fn`. (already provided)
-
-*Step 3: Writing Proof Code*
-
-To verify that your implementation satisfies the spec, you need to write proof code.
-
-- Inline proofs: Embedded directly inside the `fn` body using assert statements and ghost variables.
-
-- Standalone proof functions: Written using `proof fn`, which are analogous to `lemma` in Dafny. Use this for complex reasoning or reusable proofs.
-
-Refer to the Verus proof guide for examples:
-
-👉 [Verus Proof Functions Guide](https://verus-lang.github.io/verus/guide/proof_functions.html)
 
 ## Building and running Verification
 
@@ -137,33 +80,6 @@ dotnet bin/IronRSLServer.dll certs/MyCounter.IronRSL.service.txt certs/MyCounter
 dotnet bin/IronRSLServer.dll certs/MyCounter.IronRSL.service.txt certs/MyCounter.IronRSL.server2.private.txt
 dotnet bin/IronRSLServer.dll certs/MyCounter.IronRSL.service.txt certs/MyCounter.IronRSL.server3.private.txt
 ```
-
-
-# Notes
-
-- In protocol layer, you can only use spec types, such as Seq, Map, Set, int, nat.
-But in implementation layer, you can only use executable types, such as Vec, HashMap, HashSet, i32, i64, u64, etc. Their relationships are:
-   - Seq -> Vec
-   - Map -> HashMap
-   - Set -> HashSet
-   - int -> i32, i64, u64, etc. (I suggest you use u64 in the implementation layer).
-- Verus spec functions cannot have any mutable variables or iteration. Any code that depends on iteration in a Dafny (ghost) function needs to be written recursively or in a proof function. However, you can't call proof functions in pre/post-condition clauses.  
-- Verus doesn't support adding additional conditions on anything implementing a trait. I'm not sure how to implement the IronFleet structure of having a base, more abstract module and then refining it in each subclass. That's why the clauses from the framework abstract classes are just copied over into the lock functions.
-- Verus doesn't support using addition/other operations in a forall clause. For example, trying to state something about two adjacent items in a Dafny function usually looks like:
-
-```
-forall i :: 0 <= i < |s| - 1 ==> foo(s[i], s[i+1])
-```
-
-This will fail in Verus, and you need to introduce another variable j, with the value for i+1, i.e.
-
-```
-forall |i: int| 0 <= i < s.len() - 1 && j == i+1 ==> foo(s[i], s[j])
-```
-
-- Verus maps and sets are infinite by default. In Dafny, there are imaps, isets, maps and sets. All verus maps are imaps, and need to be bounded with m.dom().finite() if required.
-- Verus has a handy View trait for mapping a concrete type to a ghost type. This is used a lot for the protocol->host implementation. To use it, the struct needs a spec function called view() that returns the ghost type. The shortcut to call the view function is `@`, e.g. host_protocol@ returns an abstract node (The abstract protocol struct).
-- Marshalling has a flaw - there's no spec function to check whether something is not deserializable. This makes it hard to assign something like a "CInvalid" message type for non-deserializable message, because I can't prove it's not a valid message. So, these packets are currently just ignored. 
 
 # Code borrowed from IronKV
 
