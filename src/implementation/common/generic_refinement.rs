@@ -5,8 +5,15 @@ use builtin::*;
 use builtin_macros::*;
 use std::collections::*;
 use vstd::{modes::*, prelude::*, seq::*, *};
+use vstd::view::*;
 
 verus! {
+
+    pub open spec fn AbstractifyU64(s:u64) -> int
+    {
+        s as int
+    }
+
     pub open spec fn SeqIsAbstractable<CT>(s:Vec<CT>, AbstractableValue:spec_fn(CT) -> bool) -> bool
     {
         forall |i:int| 0 <= i < s.len() ==> AbstractableValue(s[i])
@@ -40,6 +47,34 @@ verus! {
             // &&& (forall |i:CT| #![trigger RefineValue(i)]cs.contains(RefineValue(i)) ==> exists |x:int| 0 <= x < s.len() && i == s[x])
         })
     {
+    }
+
+    #[verifier::external_body]
+    pub proof fn lemma_AbstractifyVec_Concat<CT:vstd::view::View>(v1:Vec<CT>, v2:Vec<CT>, v3:Vec<CT>, p:spec_fn(CT) -> bool)
+        requires
+            // forall |x:CT| v1@.contains(x) ==> p(x),
+            // forall |x:CT| v2@.contains(x) ==> p(x),
+            forall |i:int| 0 <= i < v1@.len() ==> p(v1[i]),
+            forall |i:int| 0 <= i < v2@.len() ==> p(v2[i]),
+            v3@ == v1@ + v2@,
+        ensures
+            // forall |x:CT| v3@.contains(x) ==> p(x)
+            forall |i:int| 0 <= i < v3@.len() ==> p(v3[i]),
+    {
+
+    }
+
+    #[verifier::external_body]
+    pub proof fn lemma_AbstractifyVec_Truncate<CT:vstd::view::View>(v1:Vec<CT>, v2:Vec<CT>, start:usize, end:usize, p:spec_fn(CT) -> bool)
+        requires
+            v2.len() == end - start,
+            v2@ == v1@.subrange(start as int, end as int),
+            v2@.map(|i, t:CT| t@) == v1@.map(|i, t:CT| t@).subrange(start as int, end as int),
+            forall |i:int| 0 <= i < v1@.len() ==> p(v1[i]),
+        ensures
+            forall |i:int| 0 <= i < v2@.len() ==> p(v2[i]),
+    {
+
     }
 
 
@@ -83,6 +118,38 @@ verus! {
     }
 
     #[verifier::external_body]
+    pub proof fn lemma_AbstractifySet_SizeUnchange2<T:vstd::view::View>(s:HashSet<T>)
+        ensures 
+        ({
+            let ss = s@.map(|i:T| i@);
+            &&& s@.len() == ss.len()
+            &&& s.len() == ss.len()
+        })
+    {
+
+    }
+
+    #[verifier::external_body]
+    pub proof fn lemma_SetViewSizeUnchange<CT:vstd::view::View>(s:Set<CT>, ss:Set<CT::V>)
+        requires
+            forall |x:CT| s.contains(x) ==> ss.contains(x@),
+            // forall |x:CT::V| ss.contains(x) ==> exists |y:CT| s.contains(y) &&  x == y@,
+        ensures
+            ss.len() == s.len()
+    {
+
+    }
+
+    // pub proof fn lemma_SetViewSizeUnchange<CT:vstd::view::View>(s:Set<CT>, ss:Set<CT::V>)
+    //     requires
+    //         ss == s.map(|x:CT| x@)
+    //     ensures
+    //         ss.len() == s.len()
+    // {
+
+    // }
+
+    #[verifier::external_body]
     pub proof fn lemma_AbstractifySet_SizeUnchange<T, CT>(s:Set<CT>, ss:Set<T>, RefineValue: spec_fn(CT) -> T, AbstractableValue:spec_fn(CT) -> bool)
         requires
             (forall |x:CT| s.contains(x) ==> AbstractableValue(x)),
@@ -117,6 +184,9 @@ verus! {
             assert(s.len() == ss.len());
         }
     }
+
+    // pub proof fn lemma_AbstractifySet_Insert1<T, CT>(s1:Set<CT>, s2:Set<CT>, e:CT, Refine:spec_fn(CT) -> T)
+    //     requires 
 
     // pub proof fn lemma_HashSetView_SizeUnchange<CT: std::cmp::Eq + std::hash::Hash>(s:HashSet<CT>, ss:Set<CT>)
     //     requires
@@ -200,6 +270,190 @@ verus! {
                 &&& (forall |ck:CKT| m@.contains_key(ck) ==> rm[RefineKey(ck)] == RefineValue(m@[ck]))
                 &&& (forall |k:KT| rm.contains_key(k) ==> (exists |ck:CKT| m@.contains_key(ck) && RefineKey(ck) == k))
             })
+    {
+
+    }
+
+    #[verifier::external_body]
+    pub proof fn lemma_AbstractifyMap_DomainUnchange<KT:vstd::view::View, VT:vstd::view::View>(m:HashMap<KT, VT>)
+        ensures
+        ({
+            let sm = Map::new(
+                |k:KT::V| exists |ck:KT| m@.contains_key(ck) && ck@ == k,
+                |k:KT::V| {
+                    let ck = choose |ck:KT| m@.contains_key(ck) && ck@ == k;
+                    m@[ck]@
+                }
+            );
+            &&& forall |k:KT| m@.contains_key(k) ==> sm.contains_key(k@) && m@[k]@ == sm[k@]
+            &&& forall |k:KT| !m@.contains_key(k) ==> !sm.contains_key(k@)
+        })
+    {
+
+    }
+
+    #[verifier::external_body]
+    pub proof fn lemma_AbstractifyMap_DomainUnchange2<KT:vstd::view::View, VT, CVT>(m:HashMap<KT, CVT>, RefineValue: spec_fn(CVT) -> VT)
+        ensures
+        ({
+            let sm = Map::new(
+                |k:KT::V| exists |ck:KT| m@.contains_key(ck) && ck@ == k,
+                |k:KT::V| {
+                    let ck = choose |ck:KT| m@.contains_key(ck) && ck@ == k;
+                    RefineValue(m@[ck])
+                }
+            );
+            &&& forall |k:KT| m@.contains_key(k) ==> sm.contains_key(k@) && RefineValue(m@[k]) == sm[k@]
+            &&& forall |k:KT| !m@.contains_key(k) ==> !sm.contains_key(k@)
+        })
+    {
+
+    }
+
+    #[verifier::external_body]
+    pub proof fn lemma_AbstractifyMap_DomainUnchange3<KT, CKT, VT:vstd::view::View>(m:HashMap<CKT, VT>, RefineKey: spec_fn(CKT) -> KT)
+        ensures
+        ({
+            let sm = Map::new(
+                |sk:KT| exists |ck:CKT| m@.contains_key(ck) && RefineKey(ck) == sk,
+                |sk:KT| {
+                    let ck = choose |ck:CKT| m@.contains_key(ck) && RefineKey(ck) == sk;
+                    m@[ck]@
+                }
+            );
+            &&& forall |ck:CKT| m@.contains_key(ck) ==> sm.contains_key(RefineKey(ck)) && m@[ck]@ == sm[RefineKey(ck)]
+            &&& forall |ck:CKT| !m@.contains_key(ck) ==> !sm.contains_key(RefineKey(ck))
+        })
+    {
+
+    }
+
+    #[verifier::external_body]
+    pub proof fn lemma_AbstractifyMap_Insert<KT:vstd::view::View, VT:vstd::view::View>(old_m:HashMap<KT, VT>, new_m:HashMap<KT, VT>, k:KT, v:VT)
+        requires
+            new_m@ == old_m@.insert(k, v)
+        ensures
+        ({
+            let s_old_m = Map::new(
+                |k:KT::V| exists |ck:KT| old_m@.contains_key(ck) && ck@ == k,
+                |k:KT::V| {
+                    let ck = choose |ck:KT| old_m@.contains_key(ck) && ck@ == k;
+                    old_m@[ck]@
+                }
+            );
+            let s_new_m = Map::new(
+                |k:KT::V| exists |ck:KT| new_m@.contains_key(ck) && ck@ == k,
+                |k:KT::V| {
+                    let ck = choose |ck:KT| new_m@.contains_key(ck) && ck@ == k;
+                    new_m@[ck]@
+                }
+            ); 
+            &&& s_new_m == s_old_m.insert(k@, v@)
+        })
+    {
+
+    }
+
+    // #[verifier::external_body]
+    // pub proof fn lemma_AbstractifyMap_Remove<KT:vstd::view::View, VT:vstd::view::View>(old_m:HashMap<KT, VT>, new_m:HashMap<KT, VT>, k:KT, v:VT)
+    //     requires
+    //         new_m@ == old_m@.insert(k, v)
+    //     ensures
+    //     ({
+    //         let s_old_m = Map::new(
+    //             |k:KT::V| exists |ck:KT| old_m@.contains_key(ck) && ck@ == k,
+    //             |k:KT::V| {
+    //                 let ck = choose |ck:KT| old_m@.contains_key(ck) && ck@ == k;
+    //                 old_m@[ck]@
+    //             }
+    //         );
+    //         let s_new_m = Map::new(
+    //             |k:KT::V| exists |ck:KT| new_m@.contains_key(ck) && ck@ == k,
+    //             |k:KT::V| {
+    //                 let ck = choose |ck:KT| new_m@.contains_key(ck) && ck@ == k;
+    //                 new_m@[ck]@
+    //             }
+    //         ); 
+    //         &&& s_new_m == s_old_m.insert(k@, v@)
+    //     })
+    // {
+
+    // }
+
+    #[verifier::external_body]
+    pub proof fn lemma_AbstractifyMap_Insert2<KT:vstd::view::View, VT, CVT>(old_m:HashMap<KT, CVT>, new_m:HashMap<KT, CVT>, k:KT, v:CVT, RefineValue: spec_fn(CVT) -> VT)
+        requires
+            new_m@ == old_m@.insert(k, v)
+        ensures
+        ({
+            let s_old_m = Map::new(
+                |k:KT::V| exists |ck:KT| old_m@.contains_key(ck) && ck@ == k,
+                |k:KT::V| {
+                    let ck = choose |ck:KT| old_m@.contains_key(ck) && ck@ == k;
+                    RefineValue(old_m@[ck])
+                }
+            );
+            let s_new_m = Map::new(
+                |k:KT::V| exists |ck:KT| new_m@.contains_key(ck) && ck@ == k,
+                |k:KT::V| {
+                    let ck = choose |ck:KT| new_m@.contains_key(ck) && ck@ == k;
+                    RefineValue(new_m@[ck])
+                }
+            ); 
+            &&& s_new_m == s_old_m.insert(k@, RefineValue(v))
+        })
+    {
+
+    }
+
+    // #[verifier::external_body]
+    // pub proof fn lemma_AbstractifyMap_Insert2<KT, CKT, VT:vstd::view::View>(old_m:HashMap<CKT, VT>, new_m:HashMap<CKT, VT>, k:CKT, v:VT, RefineKey: spec_fn(CKT) -> KT)
+    //     requires
+    //         new_m@ == old_m@.insert(k, v)
+    //     ensures
+    //     ({
+    //         let s_old_m = Map::new(
+    //             |k:KT::V| exists |ck:KT| old_m@.contains_key(ck) && ck@ == k,
+    //             |k:KT::V| {
+    //                 let ck = choose |ck:KT| old_m@.contains_key(ck) && ck@ == k;
+    //                 RefineValue(old_m@[ck])
+    //             }
+    //         );
+    //         let s_new_m = Map::new(
+    //             |k:KT::V| exists |ck:KT| new_m@.contains_key(ck) && ck@ == k,
+    //             |k:KT::V| {
+    //                 let ck = choose |ck:KT| new_m@.contains_key(ck) && ck@ == k;
+    //                 RefineValue(new_m@[ck])
+    //             }
+    //         ); 
+    //         &&& s_new_m == s_old_m.insert(k@, RefineValue(v))
+    //     })
+    // {
+
+    // }
+
+    #[verifier::external_body]
+    pub proof fn lemma_AbstractifyMap_Remove2<KT, CKT, VT:vstd::view::View>(old_m:HashMap<CKT, VT>, new_m:HashMap<CKT, VT>, k:CKT, RefineKey: spec_fn(CKT) -> KT)
+        requires
+            new_m@ == old_m@.remove(k)
+        ensures
+        ({
+            let s_old_m = Map::new(
+                |sk:KT| exists |ck:CKT| old_m@.contains_key(ck) && RefineKey(ck) == sk,
+                |sk:KT| {
+                    let ck = choose |ck:CKT| old_m@.contains_key(ck) && RefineKey(ck) == sk;
+                    old_m@[ck]@
+                }
+            );
+            let s_new_m = Map::new(
+                |sk:KT| exists |ck:CKT| new_m@.contains_key(ck) && RefineKey(ck) == sk,
+                |sk:KT| {
+                    let ck = choose |ck:CKT| new_m@.contains_key(ck) && RefineKey(ck) == sk;
+                    new_m@[ck]@
+                }
+            ); 
+            &&& s_new_m == s_old_m.remove(RefineKey(k))
+        })
     {
 
     }

@@ -13,9 +13,33 @@ using System.Threading;
 using System.Threading.Tasks.Dataflow;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Diagnostics;
+using System.Threading.Tasks;
 
 namespace IronfleetIoFramework
 {
+  public class IoTimer
+  {
+    private static Stopwatch _stopWatch = null;
+
+    public static long Ticks
+    {
+      get
+      {
+        return _stopWatch.ElapsedTicks;
+      }
+    }
+    public static void Initialize()
+    {
+      _stopWatch = Stopwatch.StartNew();
+    }
+
+    public static double TicksToMilliseconds(long ticks)
+    {
+      return ticks * 1000.0 / Stopwatch.Frequency;
+    }
+  }
+
   public class PrivateIdentity
   {
     public string FriendlyName { get; set; }

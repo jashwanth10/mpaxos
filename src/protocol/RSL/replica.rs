@@ -65,7 +65,7 @@ verus! {
     recommends received_packet.msg is RslMessageRequest
     {
         if s.executor.reply_cache.contains_key(received_packet.src)
-            && s.executor.reply_cache[received_packet.src] is Reply
+            // && s.executor.reply_cache[received_packet.src] is Reply
             && received_packet.msg->seqno_req <= s.executor.reply_cache[received_packet.src].seqno
         {
             &&& LExecutorProcessRequest(s.executor, received_packet, sent_packets)

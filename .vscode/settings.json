@@ -1,0 +1,9 @@
+{
+    "rust-analyzer.diagnostics.disabled": [
+      "unresolved-import",
+      "unresolved-macro-call"
+    ],
+    "rust-analyzer.procMacro.enable": true,
+    "rust-analyzer.cargo.loadOutDirsFromCheck": true
+  }
+  

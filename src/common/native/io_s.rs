@@ -9,6 +9,7 @@ use std::net::UdpSocket;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use vstd::slice::*;
 use vstd::{modes::*, prelude::*, seq::*, *};
+use vstd::std_specs::hash::*;
 
 verus! {
     pub struct AbstractEndPoint {
@@ -26,9 +27,18 @@ verus! {
     }
 
     define_struct_and_derive_marshalable!{
-        #[derive(Eq, Hash, Clone)]
+        #[derive(Eq, Hash, Debug)]
         pub struct EndPoint{
             pub id: Vec::<u8>,
+        }
+    }
+
+    impl Clone for EndPoint{
+
+        fn clone(&self) -> Self {
+            EndPoint{
+                id: self.id.clone(),
+            }
         }
     }
 
@@ -110,6 +120,21 @@ verus! {
         {
             self.id.len() < 0x100000
         }
+    }
+
+    #[verifier(broadcast_forall)]
+    #[verifier(external_body)]
+    pub proof fn axiom_endpoint_view()
+        ensures forall |e1:EndPoint, e2:EndPoint| e1@ == e2@ ==> e1 == e2
+    {
+
+    }
+
+    #[verifier(broadcast_forall)]
+    #[verifier(external_body)]
+    pub proof fn axiom_endpoint_key_model()
+        ensures #[trigger] obeys_key_model::<EndPoint>()
+    {
     }
 
     pub open spec fn abstractify_end_points(end_points: Vec<EndPoint>) -> Seq<AbstractEndPoint>
@@ -355,9 +380,9 @@ verus! {
             let mut remote = std::mem::MaybeUninit::<*mut std::vec::Vec<u8>>::uninit();
             let mut buffer = std::mem::MaybeUninit::<*mut std::vec::Vec<u8>>::uninit();
 
-            self.profiler.mark_duration("processing-ns");
+            // self.profiler.mark_duration("processing-ns");
             (self.c_pointers.receive_func)(time_limit_s, &mut ok, &mut timed_out, remote.as_mut_ptr(), buffer.as_mut_ptr());
-            self.profiler.mark_duration("awaiting-receive-ns");
+            // self.profiler.mark_duration("awaiting-receive-ns");
 
             if ok {
                 if timed_out {

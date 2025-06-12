@@ -1,9 +1,29 @@
 use builtin::*;
 use builtin_macros::*;
+use std::collections::HashSet;
 use vstd::seq::*;
 use vstd::set::*;
+use vstd::view::*;
 
-verus!{
+verus! {
+    use std::hash::Hash;
+    #[verifier(external_body)]
+    pub fn hashset_insert<T>(set: &mut HashSet<T>, inserted: T)
+    where
+        T: Clone + core::hash::Hash + Eq + View<V = T>,
+        T: 'static,
+    ensures
+        set@ == if old(set)@.contains(inserted) {
+            old(set)@} else {old(set)@ + set![inserted]},
+        set@.len() == if old(set)@.contains(inserted) {old(set)@.len()} else {
+            old(set)@.len() + 1
+        },
+        forall |x: T| old(set)@.contains(x) ==> set@.contains(x),
+        set@.contains(inserted),
+    {
+        set.insert(inserted);
+    }
+
     pub open spec fn Injective<X,Y>(f: spec_fn(X) -> Y) -> bool
     {
         forall |x1:X, x2:X| #![trigger f(x1), f(x2)] f(x1) == f(x2) ==> x1 == x2
@@ -47,10 +67,10 @@ verus!{
         recommends s.len() > 0
     {
         choose |m: int|
-            s.contains(m) && 
+            s.contains(m) &&
             forall |i: int| s.contains(i) ==> m >= i
     }
-    
+
     #[verifier::external_body]
     pub proof fn lemma_intsetmax_ensures(s: Set<int>)
         requires s.len() > 0
@@ -119,10 +139,57 @@ verus!{
     {
         if (x.subset_of(y)) {
 
-        } 
+        }
         if (x==y) {
 
         }
     }
-    
+
+    #[verifier::external_body]
+    pub proof fn subset_cardinality<T>(x:Set<T>, y:Set<T>)
+        requires x.subset_of(y)
+        ensures x.len() <= y.len()
+    {
+        // if x.is_empty() {
+        //     assert(x.len() == 0);
+        //     assert(0 <= y.len());
+        // } else {
+        //     let e: T = choose |e: T| x.contains(e);
+
+        //     let x_ = x.remove(e);
+        //     let y_ = y.remove(e);
+
+        //     assert(y.contains(e));
+
+        //     spec_apply(subset_remove(x, y, e));
+
+        //     spec_apply(set_remove_len(x, e));
+
+        //     spec_apply(set_remove_len(y, e));
+
+        //     subset_cardinality(x_, y_);
+
+        //     assert(x.len() == x_.len() + 1);
+        //     assert(y.len() == y_.len() + 1);
+        //     assert(x_.len() + 1 <= y_.len() + 1);
+        // }
+    }
+
+    #[verifier::external_body]
+    pub proof fn InsertCardinality<T>(s:Set<T>, x:T)
+        requires forall |y:T| s.contains(y) ==> y != x
+        ensures s.insert(x).len() == s.len() + 1
+    {
+
+    }
+
+    #[verifier::external_body]
+    pub proof fn subset_len_equal_implies_equal<T>(s1: Set<T>, s2: Set<T>)
+    requires
+        s1.subset_of(s2),
+        s1.len() == s2.len()
+    ensures
+        s1 == s2
+    {}
+
 }

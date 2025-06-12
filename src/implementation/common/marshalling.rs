@@ -29,6 +29,10 @@ use crate::verus_extra::seq_lib_v::*;
 //   `checked_add`), would be nice to have them in the standard library.
 
 verus! {
+#[verifier::external_body]
+pub fn print(s: &str) {
+    println!("{}", s);
+}
 
 pub trait Marshalable : Sized {
   spec fn is_marshalable(&self) -> bool;
@@ -1152,6 +1156,7 @@ impl<T: Marshalable> Marshalable for Vec<T> {
     // req, ens from trait
   {
     let (len, mid) = match usize::deserialize(data, start) { None => {
+      print("Failed to deserialize length");
       return None;
     }, Some(x) => x, };
     let len = len as usize;
@@ -1182,6 +1187,7 @@ impl<T: Marshalable> Marshalable for Vec<T> {
         accf@ == |acc: Seq<u8>, x: T| acc + x.ghost_serialize(),
     {
       let (x, end1) = match T::deserialize(data, end) { None => {
+        print("element failed to deserialize");
         return None;
       }, Some(x) => x, };
 

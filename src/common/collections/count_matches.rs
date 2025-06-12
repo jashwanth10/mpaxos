@@ -5,7 +5,7 @@ use vstd::seq::*;
 use vstd::{set::*, set_lib::*};
 
 verus! {
-    // pub open spec fn CountMatchesInSeq<T, F: spec_fn(T) -> bool>(s: Seq<T>, f: F) -> nat 
+    // pub open spec fn CountMatchesInSeq<T, F: spec_fn(T) -> bool>(s: Seq<T>, f: F) -> nat
     // {
     //     if s.len() == 0 {
     //         0
@@ -14,7 +14,7 @@ verus! {
     //     }
     // }
 
-    pub open spec fn CountMatchesInSeq<T>(s: Seq<T>, f: spec_fn(T) -> bool) -> nat 
+    pub open spec fn CountMatchesInSeq<T>(s: Seq<T>, f: spec_fn(T) -> bool) -> nat
         decreases s.len()
     {
         if s.len() == 0 {
@@ -28,7 +28,8 @@ verus! {
     {
         &&& 0 < n < s.len()
         &&& s.contains(v)
-        &&& CountMatchesInSeq(s, |x:int| x > v) < n 
+        &&& CountMatchesInSeq(s, |x:int| x > v) < n
         &&& CountMatchesInSeq(s, |x:int| x >= v) >= n
     }
+
 }

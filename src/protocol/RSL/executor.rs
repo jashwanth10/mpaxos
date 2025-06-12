@@ -153,8 +153,8 @@ verus! {
         let replies = temp.1;
         let clients = LClientsInReplies(replies);
         &&& s_.constants == s.constants
-        &&& s_.app == s.app
-        &&& s_.ops_complete == s.ops_complete 
+        &&& s_.app == new_state
+        &&& s_.ops_complete == s.ops_complete + 1
         &&& s_.max_bal_reflected == if BalLeq(s.max_bal_reflected, s.next_op_to_execute->bal) {s.next_op_to_execute->bal} else {s.max_bal_reflected}
         &&& s_.next_op_to_execute == OutstandingOperation::OutstandingOpUnknown{}
         &&& UpdateNewCache(s.reply_cache, s_.reply_cache, replies)
@@ -166,6 +166,10 @@ verus! {
         s_:LExecutor, 
         inp:RslPacket
     ) -> bool
+        recommends
+            inp.msg is RslMessageAppStateSupply,
+            s.constants.all.config.replica_ids.contains(inp.src),
+            inp.msg->opn_state_supply > s.ops_complete,
     {
         let m = inp.msg;
         s_ == LExecutor{
@@ -216,6 +220,7 @@ verus! {
         inp:RslPacket, 
         sent_packets:Seq<RslPacket>
     ) -> bool 
+        recommends inp.msg is RslMessageStartingPhase2
     {
         if s.constants.all.config.replica_ids.contains(inp.src) 
             && inp.msg->logTruncationPoint_2 > s.ops_complete
@@ -238,6 +243,11 @@ verus! {
         inp:RslPacket, 
         sent_packets:Seq<RslPacket>
     ) -> bool 
+        recommends 
+            inp.msg is RslMessageRequest,
+            s.reply_cache.contains_key(inp.src),
+            s.reply_cache[inp.src] is Reply,
+            inp.msg->seqno_req <= s.reply_cache[inp.src].seqno
     {
         if inp.msg->seqno_req == s.reply_cache[inp.src].seqno && LReplicaConstantsValid(s.constants)
         {

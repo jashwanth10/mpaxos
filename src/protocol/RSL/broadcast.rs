@@ -18,4 +18,13 @@ verus! {
                                                                 src:c.replica_ids[myidx], 
                                                                 msg:m}
     }
+
+    pub open spec fn BuildLBroadcast(src: AbstractEndPoint, dsts: Seq<AbstractEndPoint>, m: RslMessage) -> (res:Seq<RslPacket>)
+    //     (forall |i: int| 0<=dsts.len()<dsts.len() ==> res[i] == LPacket{dst: dsts[i],src:src, msg:m})
+        decreases dsts.len()
+    {
+        if dsts.len() == 0 {Seq::empty()}
+        else {
+            seq![LPacket{dst: dsts[0],src: src,msg: m}] + BuildLBroadcast(src, dsts.skip(1), m)}
+    }
 }

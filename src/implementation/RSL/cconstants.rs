@@ -25,6 +25,20 @@ verus! {
     }
 
     impl CConstants {
+
+        #[verifier(external_body)]
+        pub fn clone_up_to_view(&self) -> (result:Self)
+        ensures
+            self == result,
+            self@ == result@,
+            result.valid()
+        {
+            CConstants {
+                config: self.config.clone_up_to_view(),
+                params: self.params.clone_up_to_view(),
+            }
+        }
+
         pub open spec fn abstractable(self) -> bool
         {
             self.config.abstractable()
@@ -58,6 +72,19 @@ verus! {
     }
 
     impl CReplicaConstants {
+
+        #[verifier(external_body)]
+        pub fn clone_up_to_view(&self) -> (result:Self)
+        ensures
+            self@ == result@,
+            result.valid() // This is needed in cloning because we have to prove the validity of of the cloned object
+        {
+            CReplicaConstants {
+                my_index: self.my_index,
+                all: self.all.clone_up_to_view(),
+            }
+        }
+
         pub open spec fn abstractable(self) -> bool
         {
             &&& self.all.abstractable()
@@ -78,13 +105,20 @@ verus! {
                 all: self.all@,
             }
         }
+
+        pub fn CReplicaConstantsValid(&self) -> (res:bool) 
+            requires self.valid(),
+            ensures res == LReplicaConstantsValid(self@)
+        {
+            self.my_index >= 0 && self.my_index < self.all.config.replica_ids.len() as u64
+        }   
     }
 
-    pub fn InitReplicaConstants(end:EndPoint, config:CConfiguration) -> (rc:CReplicaConstants)
+    pub fn InitReplicaConstants(end:&EndPoint, config:&CConfiguration) -> (rc:CReplicaConstants)
         requires
             config.valid(),
             end.valid_public_key(),
-            config.replica_ids@.contains(end),
+            config.replica_ids@.contains(*end),
         ensures
             rc.valid(),
             rc.all.config.replica_ids[rc.my_index as int] == end,
@@ -95,7 +129,7 @@ verus! {
     {
         let params = StaticParams();
         let (found, index) = config.CGetReplicaIndex(end);
-        let constants = CConstants{config:config, params:params};
+        let constants = CConstants{config:config.clone_up_to_view(), params:params};
         assert(constants.config.valid());
         // assert(constants.config.CWellFormedCConfiguration());
         assert(constants.params.valid());

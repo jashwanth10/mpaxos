@@ -42,6 +42,20 @@ verus! {
     }
 
     impl CParameters{
+
+        pub fn clone_up_to_view(&self) -> (result:Self)
+        ensures self@ == result@
+        {
+            CParameters {
+                max_log_length: self.max_log_length,
+                baseline_view_timeout_period: self.baseline_view_timeout_period,
+                heartbeat_period: self.heartbeat_period,
+                max_integer_val: self.max_integer_val,
+                max_batch_size: self.max_batch_size,
+                max_batch_delay: self.max_batch_delay,
+            }
+        }
+
         pub open spec fn valid(self) -> bool
         {
             &&& self.max_integer_val > self.max_log_length > 0
@@ -75,7 +89,7 @@ verus! {
     {
         CParameters{
             max_log_length: 1000,
-            baseline_view_timeout_period: 1000,
+            baseline_view_timeout_period: 400,
             heartbeat_period: 30,
             max_integer_val: 0x8000_0000_0000_0000 - 1,
             max_batch_size: 32,

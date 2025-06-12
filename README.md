@@ -109,7 +109,35 @@ verus main.rs
 ```
 
 ### Build the project
-We have not finished it, will be released later.
+```shell
+scons --verus-path="$VERUS_PATH"
+```
+
+This should run verus verification and create .dlls/.so in a bin/ folder for the C# files, and at the root of the project for Rust files. To only run the build without verification use `--no-verify`.
+
+
+### Running
+
+#### IronRSL
+
+#### Generate Certs
+
+Each IronRSL host has a unique public key as an identifier. Generate these with the CreateIronServiceCerts dll.
+
+```shell
+dotnet bin/CreateIronServiceCerts.dll outputdir=certs name=MyCounter type=IronRSL addr1=127.0.0.1 port1=4001 addr2=127.0.0.1 port2=4002 addr3=127.0.0.1 port3=4003
+```
+
+#### Running the IronRSLservers
+
+Run these lines in separate terminals to run the 3 servers.
+
+```shell
+dotnet bin/IronRSLServer.dll certs/MyCounter.IronRSL.service.txt certs/MyCounter.IronRSL.server1.private.txt
+dotnet bin/IronRSLServer.dll certs/MyCounter.IronRSL.service.txt certs/MyCounter.IronRSL.server2.private.txt
+dotnet bin/IronRSLServer.dll certs/MyCounter.IronRSL.service.txt certs/MyCounter.IronRSL.server3.private.txt
+```
+
 
 # Notes
 

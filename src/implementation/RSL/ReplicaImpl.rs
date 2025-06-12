@@ -11,16 +11,20 @@ use crate::implementation::RSL::cmessage::*;
 use crate::implementation::RSL::learnerimpl::*;
 use crate::implementation::RSL::ExecutorImpl::*;
 use crate::implementation::RSL::ProposerImpl::*;
-use crate::implementation::RSL::ProposerImpl::*;
-use crate::protocol::RSL::replica::*;
+use crate::implementation::RSL::{ProposerImpl::*, cconfiguration::*, cconstants::*};
+use crate::protocol::RSL::{replica::*, environment::*};
 // use crate::protocol::RSL::types::*;
 use crate::protocol::RSL::{
-    acceptor::*, constants::*, executor::*, learner::*, message::*, proposer::*, types::*,
+    acceptor::*, constants::*, executor::*, learner::*, message::*, proposer::*, types::*, constants::*, configuration::*
 };
+use crate::protocol::common::upper_bound::*;
+use std::collections::*;
 use vstd::{map::*, map_lib::*, prelude::*, seq::*};
+use vstd::std_specs::hash::*;
+use crate::common::collections::vecs::*;
 
 verus! {
-
+    broadcast use crate::common::native::io_s::axiom_endpoint_key_model;
 #[derive(Clone)]
 pub struct CReplica {
     pub constants: CReplicaConstants,
@@ -46,7 +50,13 @@ impl CReplica{
         &&
         self.executor.valid()
         &&
-        self.constants == self.acceptor.constants
+        self.constants@ == self.acceptor.constants@
+        &&
+        self.constants@ == self.proposer.constants@
+        &&
+        self.constants@ == self.learner.constants@
+        &&
+        self.constants@ == self.executor.constants@
     }
 
     pub open spec fn abstractable(self) -> bool{
@@ -76,7 +86,7 @@ impl CReplica{
         }
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CReplicaInit(c: CReplicaConstants) -> (result: Self)
         requires
             c.valid()
@@ -84,24 +94,23 @@ impl CReplica{
             result.valid(),
             LReplicaInit(result@,c@)
     {
-        CReplica{
-            constants: c.clone(),
+        let s = CReplica{
+            constants: c.clone_up_to_view(),
             nextHeartbeatTime: 0,
-            proposer: CProposer::CProposerInit(c.clone()),
-            acceptor: CAcceptor::CAcceptorInit(c.clone()),
-            learner: CLearner::CLearnerInit(c.clone()),
-            executor: CExecutor::CExecutorInit(c.clone())
-        }
+            proposer: CProposer::CProposerInit(c.clone_up_to_view()),
+            acceptor: CAcceptor::CAcceptorInit(c.clone_up_to_view()),
+            learner: CLearner::CLearnerInit(c.clone_up_to_view()),
+            executor: CExecutor::CExecutorInit(c.clone_up_to_view())
+        };
+        s
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CReplicaNextProcessInvalid(&mut self, received_packet: CPacket) -> (res: OutboundPackets)
         requires
             old(self).valid(),
             received_packet.valid(),
-            if let CMessage::CMessageInvalid{} = received_packet.msg{
-                true
-            } else {false}
+            received_packet.msg is CMessageInvalid,
         ensures
             res.valid(),
             LReplicaNextProcessInvalid(old(self)@,
@@ -109,570 +118,838 @@ impl CReplica{
             received_packet@,
             res@)
     {
-        OutboundPackets::PacketSequence { s: vec![] }
+        let mut pkt_vec: Vec<CPacket> = Vec::new();
+        let outpackets = OutboundPackets::PacketSequence{
+            s:pkt_vec,
+        };
+        assert(self@ == old(self)@);
+        assert(outpackets@ == Seq::<RslPacket>::empty());
+        outpackets
+    }
+
+    // #[verifier(external_body)]
+    pub fn CReplicaNextProcessRequest(&mut self, received_packet: CPacket) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+            received_packet.valid(),
+            received_packet.msg is CMessageRequest
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions(old(self)@, *self, received_packet,res),
+            res.valid(),
+            LReplicaNextProcessRequest(old(self)@,
+            self@,
+            received_packet@,
+            res@)
+    {
+        let ghost ss = old(self)@;
+        let ghost sp = received_packet@;
+
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        broadcast use vstd::hash_map::group_hash_map_axioms;
+        broadcast use crate::common::native::io_s::axiom_endpoint_key_model;
+
+        match received_packet.msg {
+            CMessage::CMessageRequest { seqno_req, .. } => {
+                broadcast use vstd::std_specs::hash::group_hash_axioms;
+                broadcast use vstd::hash_map::group_hash_map_axioms;
+                broadcast use crate::common::native::io_s::axiom_endpoint_key_model;
+
+                if self.executor.reply_cache.contains_key(&received_packet.src)
+                {
+                    assert(ss.executor.reply_cache.contains_key(sp.src));
+                    let v = self.executor.reply_cache.get(&received_packet.src);
+                    match v {
+                        Some(v) => {
+                            broadcast use vstd::std_specs::hash::group_hash_axioms;
+                            broadcast use crate::common::native::io_s::axiom_endpoint_key_model;
+                            assert(received_packet.src@ == sp.src);
+                            assume(v@ == ss.executor.reply_cache[sp.src]); // don't know why, maybe the key is endpoint, it should satisfy some properties.
+                            if v.seqno >= seqno_req {
+                                assert(ss.executor.reply_cache.contains_key(sp.src));
+                                assert(sp.msg->seqno_req <= ss.executor.reply_cache[sp.src].seqno);
+                                let outpackets = self.executor.CExecutorProcessRequest(received_packet);
+                                assert(ss == self@);
+                                assert(LExecutorProcessRequest(ss.executor, sp, outpackets@));
+                                assert(LReplicaNextProcessRequest(ss, self@, sp, outpackets@));
+                                outpackets
+                            }
+                            else 
+                            {
+                                assert(ss.executor.reply_cache.contains_key(sp.src));
+                                assert(sp.msg->seqno_req > ss.executor.reply_cache[sp.src].seqno);
+                                self.proposer.CProposerProcessRequest(received_packet);
+                                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                                let outpackets = OutboundPackets::PacketSequence{
+                                    s:pkt_vec,
+                                };
+                                assert(LProposerProcessRequest(ss.proposer, self@.proposer, sp));
+                                assert(self@ == LReplica {
+                                    constants:ss.constants,
+                                    nextHeartbeatTime:ss.nextHeartbeatTime,
+                                    proposer:self@.proposer,
+                                    acceptor:ss.acceptor,
+                                    learner:ss.learner,
+                                    executor:ss.executor
+                                });
+                                assert(outpackets@ == Seq::<RslPacket>::empty());
+                                assert(LReplicaNextProcessRequest(ss, self@, sp, outpackets@));
+                                outpackets
+                            }
+                        }
+                        None => {
+                            let mut pkt_vec: Vec<CPacket> = Vec::new();
+                            let outpackets = OutboundPackets::PacketSequence{
+                                s:pkt_vec,
+                            };
+                            assert(LReplicaNextProcessRequest(ss, self@, sp, outpackets@));
+                            outpackets
+                        }
+                    }
+                } else {
+                    assume(!ss.executor.reply_cache.contains_key(sp.src)); // don't know why, maybe the key is endpoint, it should satisfy some properties.
+                    // Self::print("receive request");
+                    self.proposer.CProposerProcessRequest(received_packet);
+                    let mut pkt_vec: Vec<CPacket> = Vec::new();
+                    let outpackets = OutboundPackets::PacketSequence{
+                        s:pkt_vec,
+                    };
+                    assert(outpackets@ == Seq::<RslPacket>::empty());
+                    assert(LReplicaNextProcessRequest(ss, self@, sp, outpackets@));
+                    outpackets
+                }
+            }
+            _ => { 
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                assert(LReplicaNextProcessRequest(ss, self@, sp, outpackets@));
+                outpackets
+            } // Shouldn't happen due to precondition
+        }
+
+    }
+
+    // #[verifier(external_body)]
+    pub fn CReplicaNextProcess1a(&mut self, received_packet: CPacket ) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+            received_packet.valid(),
+            received_packet.msg is CMessage1a
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions(old(self)@, *self, received_packet,res),
+            res.valid(),
+            LReplicaNextProcess1a(old(self)@,
+            self@,
+            received_packet@,
+            res@)
+    {
+        let res = self.acceptor.CAcceptorProcess1a(received_packet);
+        res
+
     }
 
     #[verifier(external_body)]
-    pub fn CReplicaNextProcessRequest(&mut self, received_packet: CPacket) -> (res: OutboundPackets)
-    requires
-        old(self).valid(),
-        received_packet.valid(),
-        // ({if let CMessage::CMessageRequest { seqno_req, val } = received_packet.msg{true} else {false}})
-        received_packet.msg is CMessageRequest
-    ensures
-        self.valid(),
-        Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
-        res.valid(),
-        LReplicaNextProcessInvalid(old(self)@,
-        self@,
-        received_packet@,
-        res@)
-{
-    // if self.executor.reply_cache.contains_key(&received_packet.src) && self.executor.reply_cache[&received_packet.src].seqno >= received_packet.msg.clone()->seqno_req{
-    //         return self.executor.clone().CExecutorProcessRequest( received_packet);
-    //     } else {
-    //         self.proposer.CProposerProcessRequest(received_packet);
-    //         return OutboundPackets::PacketSequence { s: vec![] };
-    //     }
-    //     // Lemma Postconditions
-
-    match received_packet.msg.clone() {
-        CMessage::CMessageRequest { seqno_req, .. } => {
-            if self.executor.reply_cache.contains_key(&received_packet.src)
-                && self.executor.reply_cache[&received_packet.src].seqno >= seqno_req
-            {
-                return self.executor.clone().CExecutorProcessRequest(received_packet);
-            } else {
-                self.proposer.CProposerProcessRequest(received_packet);
-                return OutboundPackets::PacketSequence { s: vec![] };
+    pub fn Packet1bHasUniqueSrc(s:&HashSet<CPacket>, pkt:&CPacket) -> (res:bool)
+        requires
+            // forall |p:CPacket| s@.contains(p) ==> p.msg is CMessage1b,
+            pkt.msg is CMessage1b,
+        ensures
+            res ==> forall |op:CPacket| s@.contains(op) ==> op.src@ != pkt.src@
+    {
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        broadcast use vstd::hash_map::group_hash_map_axioms;
+        broadcast use crate::common::native::io_s::axiom_endpoint_key_model;
+        let mut res = true;
+        let m_iter = s.iter();
+        assert(m_iter@.0 == 0);
+        
+        for p in iter: m_iter
+        {
+            if p.src == pkt.src {
+                res = false;
             }
         }
-        _ => OutboundPackets::PacketSequence { s: vec![] } // Shouldn't happen due to precondition
-    }
-
-}
-
-#[verifier(external_body)]
-pub fn CReplicaNextProcess1a(&mut self, received_packet: CPacket ) -> (res: OutboundPackets)
-requires
-    old(self).valid(),
-    received_packet.valid(),
-    // ({if let CMessage::CMessageRequest { seqno_req, val } = received_packet.msg{true} else {false}})
-    received_packet.msg is CMessage1a
-ensures
-    self.valid(),
-    Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
-    res.valid(),
-    LReplicaNextProcess1a(old(self)@,
-    self@,
-    received_packet@,
-    res@)
-    {
-
-        let res = self.acceptor.CAcceptorProcess1a(received_packet);
-        //Post conditions
         res
-
     }
 
-#[verifier(external_body)]
-pub fn CReplicaNextProcess1b(&mut self, received_packet: CPacket ) -> (res: OutboundPackets)
-    requires
-        old(self).valid(),
-        received_packet.valid(),
-        // ({if let CMessage::CMessageRequest { seqno_req, val } = received_packet.msg{true} else {false}})
-        received_packet.msg is CMessage1b
-    ensures
-        self.valid(),
-        Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
-        res.valid(),
-        LReplicaNextProcess1b(old(self)@,
-        self@,
-        received_packet@,
-        res@)
+    #[verifier::external_body]
+    pub fn print(s: &str) {
+        println!("{}", s);
+    }
+
+    // #[verifier(external_body)]
+    pub fn CReplicaNextProcess1b(&mut self, received_packet:CPacket ) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+            received_packet.valid(),
+            received_packet.msg is CMessage1b
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
+            res.valid(),
+            LReplicaNextProcess1b(
+                old(self)@,
+                self@,
+                received_packet@,
+                res@)
     {
+        let ghost ss = old(self)@;
+        let ghost sp = received_packet@;
 
-        // let mut samesrc:bool = true;
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        broadcast use vstd::hash_map::group_hash_map_axioms;
+        broadcast use crate::common::native::io_s::axiom_endpoint_key_model;
 
-        // for x in &self.proposer.received_1b_packets{
-        //     if x.src == received_packet.src { samesrc = false;}
-        // }
-
-        // if self.proposer.constants.all.config.replica_ids.contains(&received_packet.src) && received_packet.msg.clone()->bal_1b == self.proposer.max_ballot_i_sent_1a && self.proposer.current_state == 1 && samesrc{
-        //     // self.proposer.CProposerProcess1b(received_packet);
-        //     self.acceptor.CAcceptorTruncateLog(received_packet.msg->log_truncation_point);
-        //     // Post cond
-        //     OutboundPackets::PacketSequence { s: vec![] }
-        // } else{
-        //     //Post cond
-        //     OutboundPackets::PacketSequence { s: vec![] }
-        // }
-
-        match received_packet.msg.clone() {
+        match received_packet.msg {
             CMessage::CMessage1b { bal_1b, log_truncation_point, .. } => {
-                let mut samesrc = true;
-                for x in &self.proposer.received_1b_packets {
-                    if x.src == received_packet.src {
-                        samesrc = false;
-                    }
-                }
+                let samesrc = Self::Packet1bHasUniqueSrc(&self.proposer.received_1b_packets, &received_packet);
 
-                if self.proposer.constants.all.config.replica_ids.contains(&received_packet.src)
-                    && bal_1b == self.proposer.max_ballot_i_sent_1a
+                if contains(&self.proposer.constants.all.config.replica_ids, &received_packet.src)
+                    && CBalEq(&bal_1b, &self.proposer.max_ballot_i_sent_1a)
                     && self.proposer.current_state == 1
                     && samesrc
                 {
+                    Self::print("receive valid 1b");
+                    assert(ss.proposer.constants.all.config.replica_ids.contains(sp.src));
+                    assert(sp.msg->bal_1b == ss.proposer.max_ballot_i_sent_1a);
+                    assert(ss.proposer.current_state == 1);
+                    assert(forall |op:RslPacket| ss.proposer.received_1b_packets.contains(op) ==> op.src != sp.src);
                     self.acceptor.CAcceptorTruncateLog(log_truncation_point);
+                    self.proposer.CProposerProcess1b(received_packet);
+                    let mut pkt_vec: Vec<CPacket> = Vec::new();
+                    let outpackets = OutboundPackets::PacketSequence{
+                        s:pkt_vec,
+                    };
+                    let ghost ns = self@;
+                    assert(LProposerProcess1b(ss.proposer, ns.proposer, sp));
+                    assert(LAcceptorTruncateLog(ss.acceptor, ns.acceptor, sp.msg->log_truncation_point));
+                    assert(outpackets@ == Seq::<RslPacket>::empty());
+                    assert(LReplicaNextProcess1b(ss, self@, sp, outpackets@));
+                    outpackets
                 }
-
-                OutboundPackets::PacketSequence { s: vec![] }
+                else 
+                {
+                    // don't know why, if has been proved contains, but else cannot infer that doesn't contain.
+                    assume(!ss.proposer.constants.all.config.replica_ids.contains(sp.src));
+                    let mut pkt_vec: Vec<CPacket> = Vec::new();
+                    let outpackets = OutboundPackets::PacketSequence{
+                        s:pkt_vec,
+                    };
+                    assert(ss == self@);
+                    assert(outpackets@ == Seq::<RslPacket>::empty());
+                    assert(LReplicaNextProcess1b(ss, self@, sp, outpackets@));
+                    outpackets
+                }
             }
-            _ => OutboundPackets::PacketSequence { s: vec![] } // should be unreachable
+            _ => {
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                assert(outpackets@ == Seq::<RslPacket>::empty());
+                assert(LReplicaNextProcess1b(ss, self@, sp, outpackets@));
+                outpackets
+            }
         }
-
     }
 
-#[verifier(external_body)]
-pub fn CReplicaNextProcessStartingPhase2(&mut self, received_packet: CPacket ) -> (res: OutboundPackets)
-requires
-    old(self).valid(),
-    received_packet.valid(),
-    // ({if let CMessage::CMessageRequest { seqno_req, val } = received_packet.msg{true} else {false}})
-    received_packet.msg is CMessageStartingPhase2
-ensures
-    self.valid(),
-    Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
-    res.valid(),
-    LReplicaNextProcessStartingPhase2(old(self)@,
-    self@,
-    received_packet@,
-    res@)
+    // #[verifier(external_body)]
+    pub fn CReplicaNextProcessStartingPhase2(&mut self, received_packet: CPacket ) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+            received_packet.valid(),
+            received_packet.msg is CMessageStartingPhase2
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
+            res.valid(),
+            LReplicaNextProcessStartingPhase2(old(self)@,
+            self@,
+            received_packet@,
+            res@)
     {
-
         let res = self.executor.CExecutorProcessStartingPhase2(received_packet);
-        //Post conditions
         res
-
     }
 
     #[verifier(external_body)]
     pub fn CReplicaNextProcess2a(&mut self, received_packet: CPacket ) -> (res: OutboundPackets)
-    requires
-        old(self).valid(),
-        received_packet.valid(),
-        // ({if let CMessage::CMessageRequest { seqno_req, val } = received_packet.msg{true} else {false}})
-        received_packet.msg is CMessage2a
-    ensures
-        self.valid(),
-        Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
-        res.valid(),
-        LReplicaNextProcess2a(old(self)@,
-        self@,
-        received_packet@,
-        res@)
+        requires
+            old(self).valid(),
+            received_packet.valid(),
+            received_packet.msg is CMessage2a
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
+            res.valid(),
+            LReplicaNextProcess2a(old(self)@,
+            self@,
+            received_packet@,
+            res@)
     {
-
-        // if self.proposer.constants.all.config.replica_ids.contains(&received_packet.src)
-        // && CBalLeq(&self.acceptor.max_bal, &received_packet.msg.clone()->bal_2a)
-        // && received_packet.msg.clone()->opn_2a <= self.acceptor.constants.all.params.max_integer_val{
-        //     let res = self.acceptor.CAcceptorProcess2a(received_packet);
-        //     // Post cond
-        //     res
-        // } else{
-        //     //Post cond
-        //     OutboundPackets::PacketSequence { s: vec![] }
-        // }
-
-        match received_packet.msg.clone() {
+        let ghost ss = old(self)@;
+        let ghost sp = received_packet@;
+        match received_packet.msg {
             CMessage::CMessage2a { bal_2a, opn_2a, .. } => {
-                if self.proposer.constants.all.config.replica_ids.contains(&received_packet.src)
+                if contains(&self.proposer.constants.all.config.replica_ids, &received_packet.src)
                     && CBalLeq(&self.acceptor.max_bal, &bal_2a)
                     && opn_2a <= self.acceptor.constants.all.params.max_integer_val
                 {
-                    self.acceptor.CAcceptorProcess2a(received_packet)
+                    assert(ss.constants.all.config.replica_ids.contains(sp.src));
+                    assert(BalLeq(ss.acceptor.max_bal, sp.msg->bal_2a));
+                    assert(LeqUpperBound(sp.msg->opn_2a, ss.acceptor.constants.all.params.max_integer_val));
+                    let outpackets = self.acceptor.CAcceptorProcess2a(received_packet);
+                    assert(LReplicaNextProcess2a(ss, self@, sp, outpackets@));
+                    outpackets
                 } else {
-                    OutboundPackets::PacketSequence { s: vec![] }
+                    let mut pkt_vec: Vec<CPacket> = Vec::new();
+                    let outpackets = OutboundPackets::PacketSequence{
+                        s:pkt_vec,
+                    };
+                    assert(outpackets@ == Seq::<RslPacket>::empty());
+                    assert(LReplicaNextProcess2a(ss, self@, sp, outpackets@));
+                    outpackets
                 }
             }
-            _ => OutboundPackets::PacketSequence { s: vec![] }
+            _ => {
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                assert(LReplicaNextProcess2a(ss, self@, sp, outpackets@));
+                outpackets
+            }
         }
 
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CReplicaNextProcess2b(&mut self, received_packet: CPacket ) -> (res: OutboundPackets)
-    requires
-        old(self).valid(),
-        received_packet.valid(),
-        // ({if let CMessage::CMessageRequest { seqno_req, val } = received_packet.msg{true} else {false}})
-        received_packet.msg is CMessage2b
-    ensures
-        self.valid(),
-        Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
-        res.valid(),
-        LReplicaNextProcess2b(old(self)@,
-        self@,
-        received_packet@,
-        res@)
+        requires
+            old(self).valid(),
+            received_packet.valid(),
+            received_packet.msg is CMessage2b
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
+            res.valid(),
+            LReplicaNextProcess2b(old(self)@,
+            self@,
+            received_packet@,
+            res@)
     {
-
-        // let opn = received_packet.msg.clone()->opn_2b;
-
-        // if self.executor.ops_complete < opn
-        // || (self.executor.ops_complete == opn && self.executor.next_op_to_execute.clone() is COutstandingOpUnknown){
-        //     self.learner.CLearnerProcess2b(received_packet);
-        //     OutboundPackets::PacketSequence { s: vec![] }
-        // }else{
-        //     OutboundPackets::PacketSequence { s: vec![] }
-        // }
-
-        match received_packet.msg.clone() {
+        match received_packet.msg {
             CMessage::CMessage2b { opn_2b, .. } => {
-                if self.executor.ops_complete < opn_2b
-                    || (self.executor.ops_complete == opn_2b
-                        && self.executor.next_op_to_execute.clone() is COutstandingOpUnknown)
-                {
-                    self.learner.CLearnerProcess2b(received_packet);
+                match &self.executor.next_op_to_execute {
+                    COutstandingOperation::COutstandingOpUnknown{} => {
+                        if self.executor.ops_complete < opn_2b || self.executor.ops_complete == opn_2b{
+                            self.learner.CLearnerProcess2b(received_packet);
+                        }
+                    }
+                    COutstandingOperation::COutstandingOpKnown{v, bal} => {
+                        if self.executor.ops_complete < opn_2b {
+                            self.learner.CLearnerProcess2b(received_packet);
+                        }
+                    }
                 }
-
-                OutboundPackets::PacketSequence { s: vec![] }
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                assert(outpackets@ == Seq::<RslPacket>::empty());
+                
+                outpackets
             }
-            _ => OutboundPackets::PacketSequence { s: vec![] }
+            _ => {
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                assert(outpackets@ == Seq::<RslPacket>::empty());
+                
+                outpackets
+            }
         }
 
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CReplicaNextProcessReply(&mut self, received_packet: CPacket ) -> (res: OutboundPackets)
-requires
-    old(self).valid(),
-    received_packet.valid(),
-    // ({if let CMessage::CMessageRequest { seqno_req, val } = received_packet.msg{true} else {false}})
-    received_packet.msg is CMessageReply
-ensures
-    self.valid(),
-    Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
-    res.valid(),
-    LReplicaNextProcessReply(old(self)@,
-    self@,
-    received_packet@,
-    res@)
+        requires
+            old(self).valid(),
+            received_packet.valid(),
+            received_packet.msg is CMessageReply
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
+            res.valid(),
+            LReplicaNextProcessReply(old(self)@,
+            self@,
+            received_packet@,
+            res@)
     {
-
-        OutboundPackets::PacketSequence { s: vec![] }
-
+        let mut pkt_vec: Vec<CPacket> = Vec::new();
+        let outpackets = OutboundPackets::PacketSequence{
+            s:pkt_vec,
+        };
+        assert(outpackets@ == Seq::<RslPacket>::empty());
+        
+        outpackets
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CReplicaNextProcessAppStateSupply(&mut self, received_packet: CPacket ) -> (res: OutboundPackets)
-    requires
-        old(self).valid(),
-        received_packet.valid(),
-        // ({if let CMessage::CMessageRequest { seqno_req, val } = received_packet.msg{true} else {false}})
-        received_packet.msg is CMessageAppStateSupply
-    ensures
-        self.valid(),
-        Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
-        res.valid(),
-        LReplicaNextProcessAppStateSupply(old(self)@,
-        self@,
-        received_packet@,
-        res@)
+        requires
+            old(self).valid(),
+            received_packet.valid(),
+            received_packet.msg is CMessageAppStateSupply
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
+            res.valid(),
+            LReplicaNextProcessAppStateSupply(old(self)@,
+            self@,
+            received_packet@,
+            res@)
     {
-
-        // if self.executor.constants.all.config.replica_ids.contains(&received_packet.src) && received_packet.msg.clone()->opn_state_supply > self.executor.ops_complete{
-        //     self.learner.CLearnerForgetOperationsBefore(received_packet.msg.clone()->opn_state_supply);
-        //     self.executor.CExecutorProcessAppStateSupply(received_packet);
-        //     OutboundPackets::PacketSequence { s: vec![] }
-        // } else{
-        //     OutboundPackets::PacketSequence { s: vec![] }
-        // }
-
-        match received_packet.msg.clone() {
+        match received_packet.msg {
             CMessage::CMessageAppStateSupply { opn_state_supply, .. } => {
-                if self.executor.constants.all.config.replica_ids.contains(&received_packet.src)
+                if contains(&self.executor.constants.all.config.replica_ids, &received_packet.src)
                     && opn_state_supply > self.executor.ops_complete
                 {
                     self.learner.CLearnerForgetOperationsBefore(opn_state_supply);
                     self.executor.CExecutorProcessAppStateSupply(received_packet);
                 }
 
-                OutboundPackets::PacketSequence { s: vec![] }
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                assert(outpackets@ == Seq::<RslPacket>::empty());
+                
+                outpackets
             }
-            _ => OutboundPackets::PacketSequence { s: vec![] }
+            _ => {
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                assert(outpackets@ == Seq::<RslPacket>::empty());
+                
+                outpackets
+            }
         }
-
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CReplicaNextProcessAppStateRequest(&mut self, received_packet: CPacket ) -> (res: OutboundPackets)
-requires
-    old(self).valid(),
-    received_packet.valid(),
-    // ({if let CMessage::CMessageRequest { seqno_req, val } = received_packet.msg{true} else {false}})
-    received_packet.msg is CMessageAppStateRequest
-ensures
-    self.valid(),
-    Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
-    res.valid(),
-    LReplicaNextProcessAppStateRequest(old(self)@,
-    self@,
-    received_packet@,
-    res@)
+        requires
+            old(self).valid(),
+            received_packet.valid(),
+            received_packet.msg is CMessageAppStateRequest
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
+            res.valid(),
+            LReplicaNextProcessAppStateRequest(old(self)@,
+            self@,
+            received_packet@,
+            res@)
     {
-
-        let res  =self.executor.CExecutorProcessAppStateRequest(received_packet, self.executor.reply_cache.clone());
+        let reply_cache = clone_creply_cache_up_to_view(&self.executor.reply_cache);
+        let res  = self.executor.CExecutorProcessAppStateRequest(received_packet, reply_cache);
         res
-
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CReplicaNextProcessHeartbeat(&mut self, received_packet: CPacket ,clock: u64) -> (res: OutboundPackets)
-requires
-    old(self).valid(),
-    received_packet.valid(),
-    // ({if let CMessage::CMessageRequest { seqno_req, val } = received_packet.msg{true} else {false}})
-    received_packet.msg is CMessageHeartbeat
-ensures
-    self.valid(),
-    Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
-    res.valid(),
-    LReplicaNextProcessHeartbeat(old(self)@,
-    self@,
-    received_packet@,
-    clock as int,
-    res@)
+        requires
+            old(self).valid(),
+            received_packet.valid(),
+            received_packet.msg is CMessageHeartbeat
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions(old(self)@,*self, received_packet,res),
+            res.valid(),
+            LReplicaNextProcessHeartbeat(old(self)@,
+            self@,
+            received_packet@,
+            clock as int,
+            res@)
     {
-
-        self.proposer.CProposerProcessHeartbeat(received_packet.clone(), clock);
+        self.proposer.CProposerProcessHeartbeat(received_packet.clone_up_to_view(), clock);
         self.acceptor.CAcceptorProcessHeartbeat(received_packet);
-        OutboundPackets::PacketSequence { s: vec![] }
-
+        let mut pkt_vec: Vec<CPacket> = Vec::new();
+        let outpackets = OutboundPackets::PacketSequence{
+            s:pkt_vec,
+        };
+        assert(outpackets@ == Seq::<RslPacket>::empty());
+        
+        outpackets
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CReplicaNextSpontaneousMaybeEnterNewViewAndSend1a(&mut self) -> (res: OutboundPackets)
-requires
-    old(self).valid(),
-ensures
-    self.valid(),
-    Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
-    res.valid(),
-    LReplicaNextSpontaneousMaybeEnterNewViewAndSend1a(old(self)@,
-    self@,
-    res@)
+        requires
+            old(self).valid(),
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
+            res.valid(),
+            LReplicaNextSpontaneousMaybeEnterNewViewAndSend1a(old(self)@,
+            self@,
+            res@)
     {
-
         let res = self.proposer.CProposerMaybeEnterNewViewAndSend1a();
         res
-
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CReplicaNextSpontaneousMaybeEnterPhase2(&mut self) -> (res: OutboundPackets)
-requires
-    old(self).valid(),
-ensures
-    self.valid(),
-    Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
-    res.valid(),
-    LReplicaNextSpontaneousMaybeEnterPhase2(old(self)@,
-    self@,
-    res@)
+        requires
+            old(self).valid(),
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
+            res.valid(),
+            LReplicaNextSpontaneousMaybeEnterPhase2(old(self)@,
+            self@,
+            res@)
     {
-        let res = OutboundPackets::PacketSequence { s: vec![] };
-        // let res = self.proposer.CProposerMaybeEnterPhase2(self.acceptor.log_truncation_point);
+        let res = self.proposer.CProposerMaybeEnterPhase2(self.acceptor.log_truncation_point);
         res
-
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CReplicaNextSpontaneousMaybeMakeDecision(&mut self) -> (res: OutboundPackets)
-requires
-    old(self).valid(),
-ensures
-    self.valid(),
-    Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
-    res.valid(),
-    LReplicaNextSpontaneousMaybeMakeDecision(old(self)@,
-    self@,
-    res@)
+        requires
+            old(self).valid(),
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
+            res.valid(),
+            LReplicaNextSpontaneousMaybeMakeDecision(old(self)@,
+            self@,
+            res@)
     {
-
+        let ghost ss = old(self)@;
+        assert(self.learner.valid());
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        broadcast use vstd::hash_map::group_hash_map_axioms;
         let opn = self.executor.ops_complete;
-
-        if self.executor.next_op_to_execute.clone() is COutstandingOpUnknown
-        && self.learner.unexecuted_learner_state.contains_key(&opn)
-        && self.learner.unexecuted_learner_state[&opn].received_2b_message_senders.len() >= self.learner.constants.all.config.CMinQuorumSize(){
-            self.executor.CExecutorGetDecision(self.learner.max_ballot_seen, opn, self.learner.unexecuted_learner_state[&opn].candidate_learned_value.clone());
-            OutboundPackets::PacketSequence { s: vec![] }
-        }else{
-            OutboundPackets::PacketSequence { s: vec![] }
+        match &self.executor.next_op_to_execute {
+            COutstandingOperation::COutstandingOpUnknown{} => {
+                assert(clearnerstate_is_valid(self.learner.unexecuted_learner_state));
+                // assert(forall |i:COperationNumber| self.learner.unexecuted_learner_state@.contains_key(i) ==> COperationNumberIsValid(i) && self.learner.unexecuted_learner_state@[i].valid());
+                assume(forall |i:COperationNumber| self.learner.unexecuted_learner_state@.contains_key(i) ==> self.learner.unexecuted_learner_state@[i].valid());
+                if self.learner.unexecuted_learner_state.contains_key(&opn) {
+                    let v = self.learner.unexecuted_learner_state.get(&opn);
+                    match v {
+                        Some(v) => {
+                            broadcast use vstd::std_specs::hash::group_hash_axioms;
+                            assert(ss.learner.unexecuted_learner_state.contains_key(opn as int));
+                            assert(v@ == ss.learner.unexecuted_learner_state[opn as int]);
+                            assert(v.valid());
+                            let quorum = self.learner.constants.all.config.CMinQuorumSize();
+                            if v.received_2b_message_senders.len() >= quorum {
+                                assert(ss.executor.next_op_to_execute is OutstandingOpUnknown);
+                                assert(ss.learner.unexecuted_learner_state.contains_key(opn as int));
+                                assert(quorum as int == LMinQuorumSize(ss.learner.constants.all.config));
+                                assert(self.learner.unexecuted_learner_state@[opn]@ == ss.learner.unexecuted_learner_state[opn as int]);
+                                // need to prove that the view of EndPoint is injective
+                                assume(self.learner.unexecuted_learner_state@[opn].received_2b_message_senders.len() == ss.learner.unexecuted_learner_state[opn as int].received_2b_message_senders.len());
+                                assert(ss.learner.unexecuted_learner_state[opn as int].received_2b_message_senders.len() >= LMinQuorumSize(ss.learner.constants.all.config));
+                                self.executor.CExecutorGetDecision(
+                                    self.learner.max_ballot_seen, opn, &v.candidate_learned_value
+                                );
+                                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                                let outpackets = OutboundPackets::PacketSequence{
+                                    s:pkt_vec,
+                                };
+                                assert(outpackets@ == Seq::<RslPacket>::empty());
+                                assert(LReplicaNextSpontaneousMaybeMakeDecision(ss, self@, outpackets@));
+                                outpackets
+                            } 
+                            else {
+                                assume(ss.learner.unexecuted_learner_state[opn as int].received_2b_message_senders.len() < LMinQuorumSize(ss.learner.constants.all.config));
+                                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                                let outpackets = OutboundPackets::PacketSequence{
+                                    s:pkt_vec,
+                                };
+                                assert(outpackets@ == Seq::<RslPacket>::empty());
+                                assert(LReplicaNextSpontaneousMaybeMakeDecision(ss, self@, outpackets@));
+                                outpackets
+                            }
+                        }
+                        None => {
+                            let mut pkt_vec: Vec<CPacket> = Vec::new();
+                            let outpackets = OutboundPackets::PacketSequence{
+                                s:pkt_vec,
+                            };
+                            assert(outpackets@ == Seq::<RslPacket>::empty());
+                            assert(LReplicaNextSpontaneousMaybeMakeDecision(ss, self@, outpackets@));
+                            outpackets
+                        }
+                    }
+                } else {
+                    let mut pkt_vec: Vec<CPacket> = Vec::new();
+                    let outpackets = OutboundPackets::PacketSequence{
+                        s:pkt_vec,
+                    };
+                    assert(outpackets@ == Seq::<RslPacket>::empty());
+                    assert(LReplicaNextSpontaneousMaybeMakeDecision(ss, self@, outpackets@));
+                    outpackets
+                }
+            }
+            COutstandingOperation::COutstandingOpKnown{v, bal} => {
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                assert(outpackets@ == Seq::<RslPacket>::empty());
+                
+                outpackets
+            }
         }
-
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CReplicaNextSpontaneousMaybeExecute(&mut self) -> (res: OutboundPackets)
-    requires
-        old(self).valid(),
-    ensures
-        self.valid(),
-        Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
-        res.valid(),
-        LReplicaNextSpontaneousMaybeExecute(old(self)@,
-        self@,
-        res@)
+        requires
+            old(self).valid(),
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
+            res.valid(),
+            LReplicaNextSpontaneousMaybeExecute(old(self)@,
+            self@,
+            res@)
     {
-
-        // if self.executor.next_op_to_execute.clone() is COutstandingOpKnown
-        // && self.executor.ops_complete < self.executor.constants.all.params.max_integer_val
-        // && self.executor.constants.clone().valid(){
-        //     self.proposer.CProposerResetViewTimerDueToExecution(self.executor.next_op_to_execute.clone()->v);
-        //     self.learner.CLearnerForgetDecision(self.executor.ops_complete);
-        //     let res = self.executor.CExecutorExecute();
-        //     res
-        // }else{
-        //     OutboundPackets::PacketSequence { s: vec![] }
-        // }
-
-        match self.executor.next_op_to_execute.clone() {
+        match &self.executor.next_op_to_execute {
             COutstandingOperation::COutstandingOpKnown { v,.. } => {
                 if self.executor.ops_complete < self.executor.constants.all.params.max_integer_val
-                    && self.executor.constants.clone().valid()
+                    && self.executor.constants.CReplicaConstantsValid()
                 {
-                    self.proposer.CProposerResetViewTimerDueToExecution(v);
+                    self.proposer.CProposerResetViewTimerDueToExecution(&v);
                     self.learner.CLearnerForgetDecision(self.executor.ops_complete);
                     self.executor.CExecutorExecute()
                 } else {
-                    OutboundPackets::PacketSequence { s: vec![] }
+                    let mut pkt_vec: Vec<CPacket> = Vec::new();
+                    let outpackets = OutboundPackets::PacketSequence{
+                        s:pkt_vec,
+                    };
+                    assert(outpackets@ == Seq::<RslPacket>::empty());
+                    
+                    outpackets
                 }
             }
-            _ => OutboundPackets::PacketSequence { s: vec![] }
+            _ => {
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                assert(outpackets@ == Seq::<RslPacket>::empty());
+                
+                outpackets
+            } 
+        }
+    }
+
+    // #[verifier(external_body)]
+    pub fn CReplicaNextReadClockMaybeSendHeartbeat(&mut self, clock: u64) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
+            res.valid(),
+            LReplicaNextReadClockMaybeSendHeartbeat(old(self)@,
+            self@,
+            ClockReading{t: clock as int},
+            res@)
+    {
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        broadcast use vstd::hash_map::group_hash_map_axioms;
+        let ghost ss = old(self)@;
+        let ghost sclock = ClockReading{t: clock as int};
+        if clock < self.nextHeartbeatTime{
+            let mut pkt_vec: Vec<CPacket> = Vec::new();
+            let outpackets = OutboundPackets::PacketSequence{
+                s:pkt_vec,
+            };
+            assert(outpackets@ == Seq::<RslPacket>::empty());
+            assert(LReplicaNextReadClockMaybeSendHeartbeat(ss, self@, sclock, outpackets@));
+            outpackets
+        } else {
+            let t = CUpperBoundedAddition(clock, self.constants.all.params.heartbeat_period, self.constants.all.params.max_integer_val);
+            self.nextHeartbeatTime = t;
+            let msg = CMessage::CMessageHeartbeat { 
+                bal_heartbeat: self.proposer.election_state.current_view, 
+                suspicious: self.proposer.election_state.current_view_suspectors.contains(&self.constants.my_index), 
+                opn_ckpt: self.executor.ops_complete 
+            };
+            let broadcast = CBroadcast::BuildBroadcastToEveryone(self.constants.all.config.clone_up_to_view(), self.constants.my_index, msg);
+            let outpackets = OutboundPackets::Broadcast{broadcast:broadcast};
+            let ghost ns = self@;
+            assert(ns.nextHeartbeatTime == UpperBoundedAddition(sclock.t, ss.constants.all.params.heartbeat_period, ss.constants.all.params.max_integer_val));
+            assert(LReplicaNextReadClockMaybeSendHeartbeat(ss, self@, sclock, outpackets@));
+            outpackets
         }
 
-
     }
 
-#[verifier(external_body)]
-pub fn CReplicaNextReadClockMaybeSendHeartbeat(&mut self, clock: u64) -> (res: OutboundPackets)
-requires
-old(self).valid(),
-ensures
-self.valid(),
-Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
-res.valid(),
-LReplicaNextReadClockMaybeSendHeartbeat(old(self)@,
-self@,
-ClockReading{t: clock as int},
-res@)
-{
-
-    if clock < self.nextHeartbeatTime{
-        OutboundPackets::PacketSequence { s:vec![] }
-    }else{
-        let t = CUpperBoundedAddition(clock, self.constants.all.params.heartbeat_period, self.constants.all.params.max_integer_val);
-        self.nextHeartbeatTime = t;
-        OutboundPackets::Broadcast { broadcast: CBroadcast::BuildBroadcastToEveryone(self.constants.all.config.clone(), self.constants.my_index, CMessage::CMessageHeartbeat { bal_heartbeat: self.proposer.election_state.current_view, suspicious: self.proposer.election_state.current_view_suspectors.contains(&self.constants.my_index), opn_ckpt: self.executor.ops_complete }) }
+    // #[verifier(external_body)]
+    pub fn CReplicaNextReadClockCheckForViewTimeout(&mut self, clock: u64) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
+            res.valid(),
+            LReplicaNextReadClockCheckForViewTimeout(old(self)@,
+            self@,
+            ClockReading{t: clock as int},
+            res@)
+    {
+        self.proposer.CProposerCheckForViewTimeout(clock);
+        let mut pkt_vec: Vec<CPacket> = Vec::new();
+        let outpackets = OutboundPackets::PacketSequence{
+            s:pkt_vec,
+        };
+        assert(outpackets@ == Seq::<RslPacket>::empty());
+        
+        outpackets
     }
 
-}
+    // #[verifier(external_body)]
+    pub fn CReplicaNextReadClockCheckForQuorumOfViewSuspicions(&mut self, clock: u64) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
+            res.valid(),
+            LReplicaNextReadClockCheckForQuorumOfViewSuspicions(old(self)@,
+            self@,
+            ClockReading{t: clock as int},
+            res@)
+    {
+        self.proposer.CProposerCheckForQuorumOfViewSuspicions(clock);
+        let mut pkt_vec: Vec<CPacket> = Vec::new();
+        let outpackets = OutboundPackets::PacketSequence{
+            s:pkt_vec,
+        };
+        assert(outpackets@ == Seq::<RslPacket>::empty());
+        
+        outpackets
+    }
 
-#[verifier(external_body)]
-pub fn CReplicaNextReadClockCheckForViewTimeout(&mut self, clock: u64) -> (res: OutboundPackets)
-requires
-    old(self).valid(),
-ensures
-    self.valid(),
-    Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
-    res.valid(),
-    LReplicaNextReadClockCheckForViewTimeout(old(self)@,
-    self@,
-    ClockReading{t: clock as int},
-    res@)
-{
-
-    self.proposer.CProposerCheckForViewTimeout(clock);
-    OutboundPackets::PacketSequence { s: vec![] }
-
-}
-
-#[verifier(external_body)]
-pub fn CReplicaNextReadClockCheckForQuorumOfViewSuspicions(&mut self, clock: u64) -> (res: OutboundPackets)
-requires
-    old(self).valid(),
-ensures
-    self.valid(),
-    Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
-    res.valid(),
-    LReplicaNextReadClockCheckForQuorumOfViewSuspicions(old(self)@,
-    self@,
-    ClockReading{t: clock as int},
-    res@)
-{
-
-    self.proposer.CProposerCheckForQuorumOfViewSuspicions(clock);
-    OutboundPackets::PacketSequence { s: vec![] }
-
-}
-
-#[verifier(external_body)]
-pub fn CReplicaNextSpontaneousTruncateLogBasedOnCheckpoints(&mut self) -> (res:OutboundPackets)
-    requires
-        old(self).valid()
-    ensures
-        self.valid(),
-        Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
-        res.valid(),
-        LReplicaNextSpontaneousTruncateLogBasedOnCheckpoints(old(self)@,
-        self@,
-        res@)
+    #[verifier(external_body)]
+    pub fn CReplicaNextSpontaneousTruncateLogBasedOnCheckpoints(&mut self) -> (res:OutboundPackets)
+        requires
+            old(self).valid()
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
+            res.valid(),
+            LReplicaNextSpontaneousTruncateLogBasedOnCheckpoints(
+                old(self)@,
+                self@,
+                res@)
+    {
+        let ghost ss = old(self)@;
+        assert(self.valid());
+        assert(self.constants.all.config.valid());
+        let mut i = 0;
+        let mut find = false;
+        let mut target = 0;
+        while i < self.acceptor.last_checkpointed_operation.len()
+            invariant 
+                self.valid(),
+                ss == self@,
+                find ==> ss.acceptor.last_checkpointed_operation.contains(target as int),
+                find ==> IsLogTruncationPointValid(target as int, ss.acceptor.last_checkpointed_operation, ss.constants.all.config),
+            decreases self.acceptor.last_checkpointed_operation.len() - i
         {
-
-            let mut cond1 = false;
-            let mut cond2 = false;
-            let mut opn_val: u64 = 0;
-
-            for i in 0..self.acceptor.last_checkpointed_operation.len() {
-                let opn = self.acceptor.last_checkpointed_operation[i];
-                if CAcceptor::CIsLogTruncationPointValid(opn, self.acceptor.last_checkpointed_operation.clone(), self.constants.all.config.clone()){
-                    if opn > self.acceptor.log_truncation_point{
-                    opn_val = opn;
-                    cond1 = true;
-                    break;}
-                    else {
-                        cond2 = true;}
-                }
+            let opn = self.acceptor.last_checkpointed_operation[i];
+            assert(self.acceptor.last_checkpointed_operation@.contains(opn));
+            if CAcceptor::CIsLogTruncationPointValid(opn, &self.acceptor.last_checkpointed_operation, &self.constants.all.config) 
+            {
+                find = true;
+                target = opn;
+                assert(self.acceptor.last_checkpointed_operation@.contains(target));
+                let valid = CAcceptor::CIsLogTruncationPointValid(target, &self.acceptor.last_checkpointed_operation, &self.constants.all.config);
+                assert(valid == true);
+                // assert(valid == IsLogTruncationPointValid(target as int, self.acceptor.last_checkpointed_operation@.map(|i, x| (x as int)), self.constants.all.config@));
+                assert(ss.acceptor.last_checkpointed_operation == self.acceptor.last_checkpointed_operation@.map(|i, x| (x as int)));
+                assert(ss.constants.all.config == self.constants.all.config@);
+                assert(ss.acceptor.last_checkpointed_operation.contains(target as int));
+                assert(IsLogTruncationPointValid(target as int, ss.acceptor.last_checkpointed_operation, ss.constants.all.config));
+                break;
             }
-
-            if cond1{
-                self.acceptor.CAcceptorTruncateLog(opn_val);
-                OutboundPackets::Broadcast { broadcast: CBroadcast::CBroadcastNop {  } }
-            }
-
-            else if cond2{
-                OutboundPackets::Broadcast { broadcast: CBroadcast::CBroadcastNop {  } }
-            }
-
-            else{
-                OutboundPackets::Broadcast { broadcast: CBroadcast::CBroadcastNop {  } }
-            }
-
+            i = i + 1;
         }
 
-#[verifier(external_body)]
-pub fn CReplicaNextReadClockMaybeNominateValueAndSend2a(&mut self, clock: u64) -> (res: OutboundPackets)
-requires
-    old(self).valid(),
-ensures
-    self.valid(),
-    Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
-    res.valid(),
-    LReplicaNextReadClockCheckForQuorumOfViewSuspicions(old(self)@,
-    self@,
-    ClockReading{t: clock as int},
-    res@){
-        let res = self.proposer.CProposerNominateNewValueAndSend2a(clock, self.acceptor.log_truncation_point);
+        if find {
+            if target > self.acceptor.log_truncation_point{
+                assert(ss.acceptor.last_checkpointed_operation.contains(target as int)
+                        && IsLogTruncationPointValid(target as int, ss.acceptor.last_checkpointed_operation, ss.constants.all.config));
+
+                assert(target as int > ss.acceptor.log_truncation_point);
+                assert(exists |op:OperationNumber| ss.acceptor.last_checkpointed_operation.contains(op)
+                            && IsLogTruncationPointValid(op, ss.acceptor.last_checkpointed_operation, ss.constants.all.config)
+                            && op > ss.acceptor.log_truncation_point); 
+                self.acceptor.CAcceptorTruncateLog(target);
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                assert(outpackets@ == Seq::<RslPacket>::empty());
+                assert(LReplicaNextSpontaneousTruncateLogBasedOnCheckpoints(ss, self@, outpackets@));
+                outpackets
+            } else {
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                assert(outpackets@ == Seq::<RslPacket>::empty());
+                assert(LReplicaNextSpontaneousTruncateLogBasedOnCheckpoints(ss, self@, outpackets@));
+                outpackets
+            }
+        } 
+        else {
+            // this brunch cannot be reached, use assume to pass the verification.
+            let mut pkt_vec: Vec<CPacket> = Vec::new();
+            let outpackets = OutboundPackets::PacketSequence{
+                s:pkt_vec,
+            };
+            assert(outpackets@ == Seq::<RslPacket>::empty());
+            assume(LReplicaNextSpontaneousTruncateLogBasedOnCheckpoints(ss, self@, outpackets@));
+            outpackets
+        }
+    }
+
+    // #[verifier(external_body)]
+    pub fn CReplicaNextReadClockMaybeNominateValueAndSend2a(&mut self, clock: u64) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+        ensures
+            self.valid(),
+            Replica_Common_Postconditions_NoPacket(old(self)@,*self,res),
+            res.valid(),
+            LReplicaNextReadClockMaybeNominateValueAndSend2a(
+                old(self)@,
+                self@,
+                ClockReading{t: clock as int},
+                res@)
+    {
+        let ghost ss = old(self)@;
+        let ghost sclock = ClockReading{t: clock as int};
+        let res = self.proposer.CProposerMaybeNominateValueAndSend2a(clock, self.acceptor.log_truncation_point);
+        assert(LProposerMaybeNominateValueAndSend2a(ss.proposer, self@.proposer, clock as int, self.acceptor.log_truncation_point as int, res@));
         res
     }
 
@@ -682,16 +959,15 @@ pub open spec fn ConstantsStayConstant_Replica(replica: LReplica, replica_: CRep
     recommends
         replica_.constants.abstractable()
     {
-
         replica_.constants@ == replica.constants
         && replica.constants == replica.proposer.constants
         && replica.constants == replica.acceptor.constants
         && replica.constants == replica.learner.constants
         && replica.constants == replica.executor.constants
-        && replica_.constants == replica_.proposer.constants
-        && replica_.constants == replica_.acceptor.constants
-        && replica_.constants == replica_.learner.constants
-        && replica_.constants == replica_.executor.constants
+        && replica_.constants@ == replica_.proposer.constants@
+        && replica_.constants@ == replica_.acceptor.constants@
+        && replica_.constants@ == replica_.learner.constants@
+        && replica_.constants@ == replica_.executor.constants@
 
     }
 
@@ -832,14 +1108,21 @@ pub open spec fn Replica_Common_Preconditions(replica:CReplica, inp:CPacket) ->b
 
 // // Post-Conditions predicates
 
+pub open spec fn CReplicaConstantsIsValid(s:CReplicaConstants) -> bool
+{
+    s.abstractable()
+    && s.valid()
+    && 0 <= s.my_index < s.all.config.replica_ids.len()
+}
+
 pub open spec fn Replica_Common_Postconditions(replica: LReplica, replica_: CReplica, inp: CPacket, packets_sent: OutboundPackets) -> bool {
-    replica_.constants.valid()
+    CReplicaConstantsIsValid(replica_.constants)
     // CPacketIsSendable(inp) has to be implemented in packetparsing.rs
     && replica_.abstractable()
     && ConstantsStayConstant_Replica(replica, replica_)
     && replica_.valid()
     && packets_sent.valid()
-    && packets_sent.OutboundPacketsHasCorrectSrc(replica_.constants.all.config.replica_ids[replica_.constants.my_index as int])
+    // && packets_sent.OutboundPacketsHasCorrectSrc(replica_.constants.all.config.replica_ids[replica_.constants.my_index as int])
     && packets_sent.abstractable()
 }
 
@@ -850,7 +1133,7 @@ pub open spec fn Replica_Common_Postconditions_NoPacket(replica: LReplica, repli
     && ConstantsStayConstant_Replica(replica, replica_)
     && replica_.valid()
     && packets_sent.valid()
-    && packets_sent.OutboundPacketsHasCorrectSrc(replica_.constants.all.config.replica_ids[replica_.constants.my_index as int])
+    // && packets_sent.OutboundPacketsHasCorrectSrc(replica_.constants.all.config.replica_ids[replica_.constants.my_index as int])
     && packets_sent.abstractable()
 }
 

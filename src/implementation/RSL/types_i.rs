@@ -18,12 +18,6 @@ use crate::services::RSL::app_state_machine::*;
 verus! {
     pub type COperationNumber = u64;
 
-    // pub fn clone_coperationnumber_up_to_view(opn: &COperationNumber) -> (res: COperationNumber)
-    // ensures res@ == opn@
-    // {
-    //     *opn
-    // }
-
     pub open spec fn AbstractifyCOperationNumberToOperationNumber(s:COperationNumber) -> int
         recommends
             COperationNumberIsAbstractable(s)
@@ -40,7 +34,7 @@ verus! {
     }
 
     define_struct_and_derive_marshalable!{
-        #[derive(Clone, Copy, PartialEq)]
+        #[derive(Eq, Clone, Copy, PartialEq, Hash)]
         pub struct CBallot {
             pub seqno : u64,
             pub proposer_id : u64,
@@ -67,7 +61,24 @@ verus! {
         || (ba.seqno == bb.seqno && ba.proposer_id <= bb.proposer_id)
     }
 
+    pub fn CBalEq(ba:&CBallot, bb:&CBallot) -> (r:bool)
+        requires
+            ba.valid(),
+            bb.valid(),
+        ensures r == (ba@ == bb@)
+    {
+        ba.seqno == bb.seqno
+        && ba.proposer_id == bb.proposer_id
+    }
+
     impl CBallot {
+
+        pub fn is_equal(&self, other: &CBallot) -> (result: bool)
+            ensures
+                result == (self@ == other@)
+        {
+            self.seqno == other.seqno && self.proposer_id == other.proposer_id
+        }
 
         pub fn clone_up_to_view(&self) -> (res: CBallot)
         ensures res@ == self@
@@ -96,7 +107,7 @@ verus! {
     }
 
     define_struct_and_derive_marshalable!{
-        #[derive(Clone, PartialEq)]
+        #[derive(Clone, PartialEq, Eq, Hash)]
         pub struct CRequest {
             pub client : EndPoint,
             pub seqno : u64,
@@ -118,8 +129,11 @@ verus! {
 
     impl CRequest {
 
-    pub fn clone_up_to_view(&self) -> (res: CRequest)
-        ensures res@ == self@
+    #[verifier(external_body)]
+        pub fn clone_up_to_view(&self) -> (res: CRequest)
+            ensures
+            res@ == self@,
+            res==self
         {
             CRequest {
                 client: self.client.clone_up_to_view(),
@@ -151,7 +165,7 @@ verus! {
     }
 
     define_struct_and_derive_marshalable!{
-        #[derive(Clone)]
+        #[derive(Clone, Eq, PartialEq, Hash)]
         pub struct CReply {
             pub client : EndPoint,
             pub seqno : u64,
@@ -162,12 +176,12 @@ verus! {
     impl CReply {
 
         pub fn clone_up_to_view(&self) -> (res: CReply)
-        ensures res@ == self@
-    {
-        CReply {
-            client: self.client.clone_up_to_view(),
-            seqno: self.seqno,
-            reply: self.reply.clone_up_to_view(),
+            ensures res@ == self@
+        {
+            CReply {
+                client: self.client.clone_up_to_view(),
+                seqno: self.seqno,
+                reply: self.reply.clone_up_to_view(),
             }
         }
 
@@ -178,12 +192,26 @@ verus! {
 
         pub open spec fn valid(self) -> bool {
             &&& self.abstractable()
-            // &&&
+            &&& self.client.valid_public_key()
             &&& self.reply.valid()
         }
 
-        pub open spec fn view(self) -> Reply
-            recommends self.abstractable()
+        // pub open spec fn view(self) -> Reply
+        //     recommends self.abstractable()
+        // {
+        //     Reply{
+        //         client : self.client@,
+        //         seqno : self.seqno as int,
+        //         reply : self.reply@,
+        //     }
+        // }
+    }
+
+    impl View for CReply{
+        type V = Reply;
+
+        open spec fn view(&self) -> Reply
+            // recommends self.abstractable()
         {
             Reply{
                 client : self.client@,
@@ -197,35 +225,35 @@ verus! {
 
     #[verifier(external_body)]
     pub fn clone_request_batch_up_to_view(batch: &CRequestBatch) -> (res: CRequestBatch)
-    ensures
-        res@ == batch@,
-        forall |i: int| 0 <= i < batch.len() ==> res[i]@ == batch[i]@
-{
-    let mut cloned:Vec<CRequest> = Vec::new();
-    let mut i = 0;
-    while i < batch.len()
-        invariant
-            cloned.len() == i,
-            forall |j: int| 0 <= j < i ==> cloned[j]@ == batch[j]@
+        ensures
+            res@ == batch@,
+            forall |i: int| 0 <= i < batch.len() ==> res[i]@ == batch[i]@
     {
-        assert (forall |i: int| 0 <= i < cloned.len() ==> cloned[i]@ == batch[i]@);
-        cloned.push(batch[i].clone_up_to_view());
-        i += 1;
+        let mut cloned:Vec<CRequest> = Vec::new();
+        let mut i = 0;
+        while i < batch.len()
+            invariant
+                cloned.len() == i,
+                forall |j: int| 0 <= j < i ==> cloned[j]@ == batch[j]@
+        {
+            assert (forall |i: int| 0 <= i < cloned.len() ==> cloned[i]@ == batch[i]@);
+            cloned.push(batch[i].clone_up_to_view());
+            i += 1;
+        }
+        cloned
     }
-    cloned
-}
 
 
-    pub open spec fn crequestbatch_is_abstractable(s:CRequestBatch) -> bool {
+    pub open spec fn crequestbatch_is_abstractable(s:&CRequestBatch) -> bool {
         forall |i:int| #![auto] 0 <= i < s.len() ==> s[i].abstractable()
     }
 
-    pub open spec fn crequestbatch_is_valid(s:CRequestBatch) -> bool {
+    pub open spec fn crequestbatch_is_valid(s:&CRequestBatch) -> bool {
         &&& crequestbatch_is_abstractable(s)
         &&& (forall |i:int| #![auto] 0 <= i < s.len() ==> s[i].valid())
     }
 
-    pub open spec fn abstractify_crequestbatch(s:CRequestBatch) -> RequestBatch
+    pub open spec fn abstractify_crequestbatch(s:&CRequestBatch) -> RequestBatch
         recommends crequestbatch_is_abstractable(s)
     {
         s@.map(|i, r:CRequest| r@)
@@ -255,36 +283,36 @@ verus! {
         let mut keys: Vec<EndPoint> = Vec::new();
         let mut i = 0;
 
-    for k in cache.keys() {
-        keys.push(k.clone_up_to_view());
-    }
+        for k in cache.keys() {
+            keys.push(k.clone_up_to_view());
+        }
 
-    let mut j = 0;
-    while j < keys.len()
-        invariant
-            0 <= j <= keys.len(),
-            forall |k: int| 0 <= k < j ==> cloned.contains_key(&keys[k]) && cloned@[keys[k]] == cache@[keys[k]]
-    {
-        let key = keys[j].clone_up_to_view();
-        let val = cache.get(&key).unwrap();
-        cloned.insert(key, val.clone_up_to_view());
-        j += 1;
-    }
+        let mut j = 0;
+        while j < keys.len()
+            invariant
+                0 <= j <= keys.len(),
+                forall |k: int| 0 <= k < j ==> cloned.contains_key(&keys[k]) && cloned@[keys[k]] == cache@[keys[k]]
+        {
+            let key = keys[j].clone_up_to_view();
+            let val = cache.get(&key).unwrap();
+            cloned.insert(key, val.clone_up_to_view());
+            j += 1;
+        }
 
         cloned
     }
 
 
-    pub open spec fn creplycache_is_abstractable(m:CReplyCache) -> bool {
+    pub open spec fn creplycache_is_abstractable(m:&CReplyCache) -> bool {
         forall |i| #![auto] m@.contains_key(i) ==> i.abstractable() && m@[i].abstractable()
     }
 
-    pub open spec fn creplycache_is_valid(m:CReplyCache) -> bool {
+    pub open spec fn creplycache_is_valid(m:&CReplyCache) -> bool {
         &&& creplycache_is_abstractable(m)
         &&& (forall |i| #![auto] m@.contains_key(i) ==> m@[i].valid())
     }
 
-    pub open spec fn abstractify_creplycache(m:CReplyCache) -> ReplyCache
+    pub open spec fn abstractify_creplycache(m:&CReplyCache) -> ReplyCache
         recommends creplycache_is_abstractable(m)
     {
         Map::new(
@@ -297,7 +325,7 @@ verus! {
     }
 
     define_struct_and_derive_marshalable!{
-        #[derive(Clone)]
+        #[derive(Clone, Eq, PartialEq, Hash)]
         pub struct CVote {
             pub max_value_bal : CBallot,
             pub max_val : CRequestBatch,
@@ -317,13 +345,13 @@ verus! {
 
         pub open spec fn abstractable(self) -> bool{
             &&& self.max_value_bal.abstractable()
-            &&& crequestbatch_is_abstractable(self.max_val)
+            &&& crequestbatch_is_abstractable(&self.max_val)
         }
 
         pub open spec fn valid(self) -> bool{
             &&& self.abstractable()
             &&& self.max_value_bal.valid()
-            &&& crequestbatch_is_valid(self.max_val)
+            &&& crequestbatch_is_valid(&self.max_val)
         }
 
         pub open spec fn view(self) -> Vote
@@ -331,7 +359,7 @@ verus! {
         {
             Vote{
                 max_value_bal : self.max_value_bal@,
-                max_val : abstractify_crequestbatch(self.max_val),
+                max_val : abstractify_crequestbatch(&self.max_val),
             }
         }
     }
@@ -340,48 +368,49 @@ verus! {
 
     #[verifier(external_body)]
     pub fn clone_cvotes_up_to_view(votes: &CVotes) -> (res: CVotes)
-    ensures
-        res@ == votes@,
-        forall |k| votes@.contains_key(k) ==> res@.contains_key(k),
-        forall |k| res@.contains_key(k) ==> votes@.contains_key(k),
-        forall |k| res@.contains_key(k) ==> res@.index(k) == votes@.index(k)
-{
-    let mut cloned:HashMap<COperationNumber, CVote> = HashMap::new();
-
-    // Avoid borrow issues by collecting keys separately
-    let mut keys: Vec<COperationNumber> = Vec::new();
-    for &k in votes.keys() {
-        keys.push(k);
-    }
-
-    let mut i = 0;
-    while i < keys.len()
-        invariant
-            i <= keys.len(),
-            forall |j: int| 0 <= j < i ==> {
-                let k = keys[j];
-                cloned.contains_key(&k) && cloned@.index(k) == votes@.index(k)
-            }
+        ensures
+            res@ == votes@,
+            res == votes,
+            forall |k| votes@.contains_key(k) ==> res@.contains_key(k),
+            forall |k| res@.contains_key(k) ==> votes@.contains_key(k),
+            forall |k| res@.contains_key(k) ==> res@.index(k) == votes@.index(k)
     {
-        let k = keys[i];
-        let v = votes.get(&k).unwrap();
-        cloned.insert(k, v.clone_up_to_view());
-        i += 1;
+        let mut cloned:HashMap<COperationNumber, CVote> = HashMap::new();
+
+        // Avoid borrow issues by collecting keys separately
+        let mut keys: Vec<COperationNumber> = Vec::new();
+        for &k in votes.keys() {
+            keys.push(k);
+        }
+
+        let mut i = 0;
+        while i < keys.len()
+            invariant
+                i <= keys.len(),
+                forall |j: int| 0 <= j < i ==> {
+                    let k = keys[j];
+                    cloned.contains_key(&k) && cloned@.index(k) == votes@.index(k)
+                }
+        {
+            let k = keys[i];
+            let v = votes.get(&k).unwrap();
+            cloned.insert(k, v.clone_up_to_view());
+            i += 1;
+        }
+        cloned
     }
-    cloned
-}
 
 
-    pub open spec fn cvotes_is_abstractable(m:CVotes) -> bool {
+    pub open spec fn cvotes_is_abstractable(m:&CVotes) -> bool {
         forall |i| #![auto] m@.contains_key(i) ==> COperationNumberIsAbstractable(i) && m@[i].abstractable()
     }
 
-    pub open spec fn cvotes_is_valid(m:CVotes) -> bool {
+    pub open spec fn cvotes_is_valid(m:&CVotes) -> bool {
         &&& cvotes_is_abstractable(m)
         &&& (forall |i| #![auto] m@.contains_key(i) ==> COperationNumberIsValid(i) && m@[i].valid())
     }
 
-    pub open spec fn abstractify_cvotes(m:CVotes) -> Votes
+    pub open spec fn abstractify_cvotes(m:&CVotes) -> Votes
         recommends cvotes_is_abstractable(m)
     {
         Map::new(
@@ -403,22 +432,51 @@ verus! {
 
 
     impl CLearnerTuple{
+        #[verifier(external_body)]
+        pub fn clone_up_to_view(&self) -> (res:CLearnerTuple)
+            ensures
+                res@ == self@,
+                (self.abstractable() ==> res.abstractable()),
+        {
+            let mut new_senders = HashSet::new();
+            for client in self.received_2b_message_senders.iter() {
+                new_senders.insert(client.clone_up_to_view());
+            }
+
+            CLearnerTuple{
+                received_2b_message_senders: new_senders,
+                candidate_learned_value: clone_request_batch_up_to_view(&self.candidate_learned_value),
+            }
+        }
+
         pub open spec fn abstractable(self) -> bool{
             &&& (forall |p| self.received_2b_message_senders@.contains(p) ==> p.abstractable())
-            &&& crequestbatch_is_abstractable(self.candidate_learned_value)
+            &&& crequestbatch_is_abstractable(&self.candidate_learned_value)
         }
 
         pub open spec fn valid(self) -> bool{
             &&& self.abstractable()
             // &&& (forall |p| self.received_2b_message_senders@.contains(p) ==> p.valid())
-            &&& crequestbatch_is_valid(self.candidate_learned_value)
+            &&& crequestbatch_is_valid(&self.candidate_learned_value)
         }
 
         pub open spec fn view(self) -> LearnerTuple
         {
             LearnerTuple{
                 received_2b_message_senders:self.received_2b_message_senders@.map(|i:EndPoint| i@),
-                candidate_learned_value:abstractify_crequestbatch(self.candidate_learned_value),
+                candidate_learned_value:abstractify_crequestbatch(&self.candidate_learned_value),
+            }
+        }
+    }
+
+    impl View for CLearnerTuple{
+        type V = LearnerTuple;
+
+        open spec fn view(&self) -> LearnerTuple
+        {
+            LearnerTuple{
+                received_2b_message_senders:self.received_2b_message_senders@.map(|i:EndPoint| i@),
+                candidate_learned_value:abstractify_crequestbatch(&self.candidate_learned_value),
             }
         }
     }

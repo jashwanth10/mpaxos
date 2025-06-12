@@ -7,3 +7,4 @@ pub mod seqs;
 pub mod sets;
 pub mod sets_lib;
 pub mod vecs;
+pub mod helper;

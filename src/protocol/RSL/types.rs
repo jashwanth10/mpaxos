@@ -64,6 +64,11 @@ verus! {
         ||| (ba.seqno == bb.seqno && ba.proposer_id <= bb.proposer_id)
     }
 
+    pub open spec fn Baleq(ba:Ballot, bb:Ballot) -> bool
+    {
+        (ba.seqno == bb.seqno && ba.proposer_id == bb.proposer_id)
+    }
+
     pub proof fn lemma_BalLtMiddle(ba:Ballot, bb:Ballot)
         requires 
             !BalLt(ba, bb),

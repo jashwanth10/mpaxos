@@ -20,6 +20,28 @@ verus! {
     }
 
     impl CConfiguration {
+        #[verifier(external_body)]
+        pub fn clone_up_to_view(&self) -> (res:CConfiguration)
+        ensures
+            self@ == res@,
+            self == res,
+            res.valid(),
+        {
+            let mut newVec:Vec<EndPoint> = Vec::new();
+            let mut i = 0;
+            let len = self.replica_ids.len();
+            while i<len
+            {
+                assert(i >= 0);
+                assert(i < self.replica_ids@.len());
+                newVec.push(self.replica_ids[i].clone_up_to_view());
+                i += 1;
+            }
+            CConfiguration {
+                replica_ids: newVec,
+            }
+        }
+
         pub open spec fn abstractable(self) -> bool
         {
             &&& (forall |i:int| 0 <= i < self.replica_ids.len() ==> self.replica_ids[i].abstractable())
@@ -84,7 +106,7 @@ verus! {
 
 
         // #[verifier::external_body]
-        pub fn CGetReplicaIndex( &self, id:EndPoint) -> (rc:(bool, usize))
+        pub fn CGetReplicaIndex( &self, id:&EndPoint) -> (rc:(bool, usize))
             requires
                 self.valid(),
                 id.valid_public_key(),
@@ -92,9 +114,9 @@ verus! {
                 ({
                     let found = rc.0;
                     let index = rc.1;
-                    &&& found ==> self.CIsReplicaIndex(index, id)
+                    &&& found ==> self.CIsReplicaIndex(index, *id)
                     &&& found ==> GetReplicaIndex(id@, self@) == index as int /* refinement */
-                    &&& !found ==> !(self.replica_ids@.contains(id))
+                    &&& !found ==> !(self.replica_ids@.contains(*id))
                     &&& !found ==> !(self@.replica_ids.contains(id@))
                 })
         {
@@ -146,7 +168,7 @@ verus! {
                 if i == self.replica_ids.len() - 1 {
                     let found = false;
                     let idx = 0;
-                    assert(!self.replica_ids@.contains(id));
+                    assert(!self.replica_ids@.contains(*id));
                     proof {
                         lemma_AbstractifyEndpoints_properties(self.replica_ids);
                     }

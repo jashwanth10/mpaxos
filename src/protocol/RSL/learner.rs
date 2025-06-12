@@ -89,12 +89,12 @@ verus! {
         ops_complete:OperationNumber
     ) -> bool 
     {
-        let new_learner_state = Map::new(|k: OperationNumber| s.unexecuted_learner_state.contains_key(k),
-                                         |k: OperationNumber| s.unexecuted_learner_state[k]);
-        s_ == LLearner{
+        &&& (forall |k:OperationNumber| s_.unexecuted_learner_state.contains_key(k) <==> k >= ops_complete && s.unexecuted_learner_state.contains_key(k))
+        &&& (forall |k:OperationNumber| s_.unexecuted_learner_state.contains_key(k) ==> s_.unexecuted_learner_state[k] == s.unexecuted_learner_state[k])
+        &&& s_ == LLearner{
             constants:s.constants,
             max_ballot_seen:s.max_ballot_seen,
-            unexecuted_learner_state:new_learner_state
+            unexecuted_learner_state:s_.unexecuted_learner_state
         }
     }
 }

@@ -1,3 +1,5 @@
+use std::any::Any;
+
 use builtin::*;
 use builtin_macros::*;
 use vstd::{map::*, modes::*, prelude::*, seq::*, seq_lib::*, *};
@@ -31,12 +33,15 @@ verus! {
 
     pub open spec fn RemoveVotesBeforeLogTruncationPoint(votes:Votes, votes_:Votes, log_truncation_point:OperationNumber) -> bool
     {
-        
+        &&& forall |opn: OperationNumber| votes_.contains_key(opn) ==> votes.contains_key(opn) && votes_[opn] == votes[opn]
+        &&& forall |opn: OperationNumber| opn < log_truncation_point ==> !votes_.contains_key(opn)
+        &&& forall |opn: OperationNumber| opn >= log_truncation_point && votes.contains_key(opn) ==> votes_.contains_key(opn)        
     }
 
     pub open spec fn LAddVoteAndRemoveOldOnes(votes:Votes, votes_:Votes, new_opn:OperationNumber, new_vote:Vote, log_truncation_point:OperationNumber) -> bool
     {
-       
+        &&& forall |opn: OperationNumber| votes_.contains_key(opn) <==> opn >= log_truncation_point && (votes.contains_key(opn) || opn == new_opn)
+        &&& forall |opn: OperationNumber| votes_.contains_key(opn) ==> votes_[opn] == (if opn == new_opn {new_vote} else {votes[opn]})
     }
 
     pub open spec fn LAcceptorInit(a:LAcceptor, c:LReplicaConstants) -> bool
@@ -124,7 +129,25 @@ verus! {
             BalLeq(s.max_bal, inp.msg->bal_2a),
             LeqUpperBound(inp.msg->opn_2a, s.constants.all.params.max_integer_val)
     {
-        
+        let m = inp.msg;
+        let new_log_truncation_point = if inp.msg->opn_2a - s.constants.all.params.max_log_length + 1 > s.log_truncation_point 
+                                                                                    {inp.msg->opn_2a - s.constants.all.params.max_log_length + 1}
+                                                                                    else {s.log_truncation_point};
+        &&& LBroadcastToEveryone(s.constants.all.config, 
+                                s.constants.my_index, 
+                                RslMessage::RslMessage2b {
+                                    bal_2b: m->bal_2a,
+                                    opn_2b: m->opn_2a,
+                                    val_2b: m->val_2a
+                                },
+                                sent_packets)
+        &&& s_.max_bal == m->bal_2a
+        &&& s_.log_truncation_point == new_log_truncation_point
+        &&& if s.log_truncation_point <= inp.msg->opn_2a {LAddVoteAndRemoveOldOnes(s.votes, s_.votes, m->opn_2a, Vote{max_value_bal: m->bal_2a, max_val: m->val_2a}, new_log_truncation_point)}
+                                else {s_.votes == s.votes}
+        &&& s_.constants == s.constants
+        &&& s_.last_checkpointed_operation == s.last_checkpointed_operation
+
     }
 
     pub open spec fn LAcceptorProcessHeartbeat(
@@ -135,7 +158,21 @@ verus! {
         recommends 
             inp.msg is RslMessageHeartbeat
     {
-        
+        if s.constants.all.config.replica_ids.contains(inp.src) {
+            let sender_index = GetReplicaIndex(inp.src, s.constants.all.config);
+            let msg = inp.msg;
+            if 0 <= sender_index < s.last_checkpointed_operation.len() && (msg->opn_ckpt > s.last_checkpointed_operation[sender_index]) {
+                s_.last_checkpointed_operation == s.last_checkpointed_operation.update(sender_index, msg->opn_ckpt)
+                && s_.constants == s.constants
+                && s_.max_bal == s.max_bal
+                && s_.votes == s.votes
+                && s_.log_truncation_point == s.log_truncation_point
+            } else {
+                s_ == s
+            }
+        } else {
+            s_ == s
+        }
     }
 
     pub open spec fn LAcceptorTruncateLog(
@@ -144,6 +181,15 @@ verus! {
         opn: OperationNumber
     ) -> bool
     {
-        
+        if opn <= s.log_truncation_point {
+            s_ == s
+        }else{
+            RemoveVotesBeforeLogTruncationPoint(s.votes, s_.votes, opn)
+            && s_ == LAcceptor{
+                log_truncation_point: opn,
+                votes: s_.votes,
+                ..s
+            }
+        }
     }
 }

@@ -99,10 +99,21 @@ def generate_verus_actions(source, target, env, for_signature):
       cmd_line.append("--no-verify")
   return [ cmd_line ]
 
+# def get_verus_dependencies(target, source, env):
+#   source_dir = os.path.dirname(str(source[0]))
+#   extra_dependencies = [os.path.join(source_dir, f) for f in os.listdir(source_dir) if re.search(r'\.rs$', f)]
+#   print(target, source_dir, extra_dependencies)
+#   return target, source + extra_dependencies
+
 def get_verus_dependencies(target, source, env):
   source_dir = os.path.dirname(str(source[0]))
-  extra_dependencies = [os.path.join(source_dir, f) for f in os.listdir(source_dir) if re.search(r'\.rs$', f)]
-  print(target, source_dir, extra_dependencies)
+
+  extra_dependencies = []
+  for root, _, files in os.walk(source_dir):
+    for f in files:
+      if f.endswith('.rs'):
+        extra_dependencies.append(os.path.join(root, f))
+
   return target, source + extra_dependencies
 
 # Add env.VerusBuild(), to generate Verus build actions
@@ -127,7 +138,11 @@ add_verus_builder(env)
 #
 ####################################################################
 
-env.DotnetBuild('bin/IronLockServer.dll', 'csharp/IronLockServer/IronLockServer.csproj')
+# env.DotnetBuild('bin/IronLockServer.dll', 'csharp/IronLockServer/IronLockServer.csproj')
+env.DotnetBuild('bin/IronRSLClient.dll', 'csharp/IronRSLClient/IronRSLClient.csproj')
+env.DotnetBuild('bin/IronRSLServer.dll', 'csharp/IronRSLServer/IronRSLServer.csproj')
+env.DotnetBuild('bin/IronRSLClientUDP.dll', 'csharp/IronRSLClientUDP/IronRSLClientUDP.csproj')
+env.DotnetBuild('bin/IronRSLServerUDP.dll', 'csharp/IronRSLServerUDP/IronRSLServerUDP.csproj')
 env.DotnetBuild('bin/CreateIronServiceCerts.dll', 'csharp/CreateIronServiceCerts/CreateIronServiceCerts.csproj')
 env.DotnetBuild('bin/TestIoFramework.dll', 'csharp/TestIoFramework/TestIoFramework.csproj')
-env.VerusBuild('liblib.so', 'src/main.rs')
+env.VerusBuild('liblib.so', 'src/lib.rs')

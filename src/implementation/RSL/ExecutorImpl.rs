@@ -17,7 +17,8 @@ use crate::implementation::RSL::cconstants::*;
 use crate::implementation::RSL::cmessage::*;
 use crate::implementation::RSL::cmessage::*;
 use crate::implementation::RSL::CStateMachine::*;
-use crate::protocol::RSL::constants::*;
+use crate::implementation::RSL::ElectionImpl::*;
+use crate::protocol::RSL::{constants::*, environment::*, message::*};
 use crate::protocol::RSL::executor::*;
 // use crate::implementation::common::native::io_s::*;
 // use crate::implementation::RSL::cmessage::OutboundPackets::*;
@@ -25,14 +26,19 @@ use crate::implementation::RSL::ExecutorImpl::OutboundPackets::Broadcast;
 use crate::services::RSL::app_state_machine::*;
 // use services::RSL::app_state_machine::AppState;
 // use crate::verus;
-use crate::common::native::io_s::EndPoint;
+// use crate::common::native::io_s::EndPoint;
+use crate::common::framework::environment_s::*;
+use crate::common::native::io_s::*;
+use crate::common::collections::vecs::*;
+use crate::protocol::common::upper_bound::*;
+use vstd::std_specs::hash::*;
 use builtin::*;
 use builtin_macros::*;
 use vstd::{prelude::*, seq::*, seq_lib::*};
 
 verus! {
-
-    #[derive(Clone)]
+    broadcast use crate::common::native::io_s::axiom_endpoint_key_model;
+#[derive(Clone)]
 pub enum COutstandingOperation {
     COutstandingOpKnown{
         v: CRequestBatch,
@@ -47,7 +53,7 @@ impl COutstandingOperation{
         match self {
             COutstandingOperation::COutstandingOpKnown{v, bal} => {
                 self.abstractable()
-                    && crequestbatch_is_valid(*v)
+                    && crequestbatch_is_valid(v)
                     && bal.valid()
             }
             COutstandingOperation::COutstandingOpUnknown{} => self.abstractable()
@@ -57,7 +63,7 @@ impl COutstandingOperation{
     pub open spec fn abstractable(&self) -> bool {
         match self {
             COutstandingOperation::COutstandingOpKnown{v, bal} => {
-                crequestbatch_is_abstractable(*v) && bal.abstractable()
+                crequestbatch_is_abstractable(v) && bal.abstractable()
             }
             COutstandingOperation::COutstandingOpUnknown{} => true
         }
@@ -70,7 +76,7 @@ impl COutstandingOperation{
         match self {
             COutstandingOperation::COutstandingOpKnown{v,bal} => {
                 OutstandingOperation::OutstandingOpKnown{
-                    v: abstractify_crequestbatch(v),
+                    v: abstractify_crequestbatch(&v),
                     // v: abstractify_crequestbatch(v),
                     bal: bal@,
                 }
@@ -96,18 +102,18 @@ impl CExecutor{
     pub open spec fn valid(&self) -> bool {
         self.abstractable()
             && self.constants.valid()
-            && CAppStateIsValid(self.app)
+            && CAppStateIsValid(&self.app)
             && self.max_bal_reflected.valid()
             && self.next_op_to_execute.valid()
-            && creplycache_is_valid(self.reply_cache)
+            && creplycache_is_valid(&self.reply_cache)
     }
 
     pub open spec fn abstractable(&self) -> bool {
         self.constants.abstractable()
-            && CAppStateIsAbstractable(self.app)
+            && CAppStateIsAbstractable(&self.app)
             && self.max_bal_reflected.abstractable()
             && self.next_op_to_execute.abstractable()
-            && creplycache_is_abstractable(self.reply_cache)
+            && creplycache_is_abstractable(&self.reply_cache)
     }
 
     pub open spec fn view(&self) -> LExecutor
@@ -120,390 +126,460 @@ impl CExecutor{
             ops_complete: self.ops_complete as int,
             max_bal_reflected: self.max_bal_reflected.view(),
             next_op_to_execute: self.next_op_to_execute.view(),
-            reply_cache: abstractify_creplycache(self.reply_cache),
+            reply_cache: abstractify_creplycache(&self.reply_cache),
         };
         res
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub fn CExecutorInit(c: CReplicaConstants) -> (s:Self)
         requires
             c.valid()
         ensures
             s.valid(),
-            LExecutorInit(s.view(), c.view())
+            LExecutorInit(s@, c@)
     {
-        CExecutor {
+        let s = CExecutor {
             constants: c,
-            app: 0 as u64,
+            app: CAppStateInit(),
             ops_complete: 0,
             max_bal_reflected: CBallot { seqno: 0, proposer_id: 0 },
             next_op_to_execute: COutstandingOperation::COutstandingOpUnknown{},
             reply_cache: HashMap::new(),
-        }
-    }
-
-    pub fn CExecutorGetDecision(&mut self, bal: CBallot, opn: COperationNumber, v: CRequestBatch)
-    requires
-        old(self).valid(),
-        bal.valid(),
-        COperationNumberIsValid(opn),
-        crequestbatch_is_valid(v),
-        opn == old(self).ops_complete,
-        old(self).next_op_to_execute is COutstandingOpUnknown
-        // ({if let COutstandingOperation::COutstandingOpUnknown{} = old(self).next_op_to_execute {true} else {false}})
-    ensures
-        self.valid(),
-        LExecutorGetDecision(old(self)@,
-                                self@,
-                                bal.view(),
-                                // opn,
-                                AbstractifyCOperationNumberToOperationNumber(opn),
-                                // v@)
-                                abstractify_crequestbatch(v))
-
-{
-    self.next_op_to_execute = COutstandingOperation::COutstandingOpKnown{v: v, bal: bal};
-    // CExecutor {
-    //     next_op_to_execute: COutstandingOperation::COutstandingOpKnown{v: v, bal: bal},
-    //     ..self
-    // }
-}
-
-#[verifier(external_body)]
-pub fn CGetPacketsFromReplies(me: EndPoint, requests: Vec<CRequest>, replies: Vec<CReply>) -> (cr:Vec<CPacket>)
-    requires
-        // EndPointIsValid(me),
-        //Needs to be checked
-        crequestbatch_is_valid(requests),
-        forall|i: int| 0 <= i < requests.len() ==> requests[i].valid(),
-        forall|i: int| 0 <= i < replies.len() ==> replies[i].valid(),
-        // forall|i: int| 0 <= i < requests.len() ==> requests[i].valid(),
-        // forall|i: int| 0 <= i < replies.len() ==> replies[i].valid(),
-        requests.len() == replies.len()
-    ensures
-        ({
-            let lr = GetPacketsFromReplies(me.view(),
-            // AbstractifySeq(requests, CRequest::view),
-            requests@.map(|i,x:CRequest| x@),
-            replies@.map(|i,x:CReply| x@));
-            // AbstractifySeq(replies, CReply::view));
-            // && AbstractifySeq(cr, CPacket::view) == lr;
-            cr@.map(|i,x: CPacket| x@) == lr
-        })
-    {
-    if requests.len()==0 {
-        Vec::new()
-    } else {
-
-        let mut res = Self::CGetPacketsFromReplies(me.clone(), requests.clone().split_off(1),replies.clone().split_off(1));
-        let x = CPacket{
-            dst: requests[0].client.clone(),
-            src: me.clone(),
-            msg: CMessage::CMessageReply{
-                seqno_reply: requests[0].seqno,
-                reply: replies[0].reply.clone()
-            }
         };
-        res.push(x);
-
-        res
+        let ghost sc = c@;
+        let ghost ss = s@;
+        assert(ss.constants == sc);
+        assert(ss.app == AppInitialize());
+        assert(ss.next_op_to_execute == OutstandingOperation::OutstandingOpUnknown{});
+        assert(ss.reply_cache == Map::<AbstractEndPoint, Reply>::empty());
+        s
     }
-}
 
-#[verifier(external_body)]
-pub fn CClientsInReplies(replies: Vec<CReply>) -> (m:CReplyCache)
-    // requires
-    //     ({forall|i: int| 0 <= i < replies.len() ==>
-        // if let CReply {client, seqno, reply} = replies[i]{ true } else {false}})
-        // && replies[i]
+    pub fn CExecutorGetDecision(&mut self, bal: CBallot, opn: COperationNumber, v:&CRequestBatch)
+        requires
+            old(self).valid(),
+            bal.valid(),
+            COperationNumberIsValid(opn),
+            crequestbatch_is_valid(v),
+            opn == old(self).ops_complete,
+            old(self).next_op_to_execute is COutstandingOpUnknown
+        ensures
+            self.valid(),
+            LExecutorGetDecision(old(self)@,
+                                    self@,
+                                    bal@,
+                                    AbstractifyCOperationNumberToOperationNumber(opn),
+                                    abstractify_crequestbatch(v))
 
-    ensures
-        forall|c: EndPoint| m@.contains_key(c) ==> m@[c].client == c,
-        forall|c: EndPoint| m@.contains_key(c) ==> (exists|req_idx: int| req_idx < replies.len()
-        && replies[req_idx].client == c
-        && m@[c] == replies[req_idx]),
-        ({
-            let lr = LClientsInReplies(replies@.map(|i,x:CReply| x@));
-            creplycache_is_valid(m)
-            && abstractify_creplycache(m)==lr
-        })
-{
-
-    let mut r = HashMap::new();
-    if replies.len()!=0 {
-        // r = CClientsInReplies(replies[1..].to_vec());
-        // r.insert(replies[0].client, replies[0]);
+    {
+        self.next_op_to_execute = COutstandingOperation::COutstandingOpKnown{v: clone_vec_crequest(v), bal: bal};
     }
-    lemma_ReplyCacheLen(r.clone());
-    r
-}
 
-#[verifier(external_body)]
-pub fn CUpdateNewCache(c: CReplyCache, replies: Vec<CReply>) -> (c_prime:CReplyCache)
-    requires
-        creplycache_is_valid(c),
-        forall|i: int| i < replies.len() ==> replies[i].valid()
-    ensures
-        creplycache_is_valid(c_prime)
-        && UpdateNewCache(abstractify_creplycache(c),
-        abstractify_creplycache(c_prime),
-        replies@.map(|i,x:CReply| x@))
-{
-    let nc = Self::CClientsInReplies(replies);
-    let mut updated_cache = HashMap::new();
-    // let x = c.keys().chain(nc.keys()).collect();
-    for x in nc.keys() {
-        let val:CReply;
-        if c.contains_key(&x) {
-            val = c.get(&x).unwrap().clone();
+    // #[verifier(external_body)]
+    pub fn CGetPacketsFromReplies(me:&EndPoint, requests:&Vec<CRequest>, replies:&Vec<CReply>) -> (cr:Vec<CPacket>)
+        requires
+            me.valid_public_key(),
+            crequestbatch_is_valid(requests),
+            forall|i: int| 0 <= i < requests.len() ==> requests[i].valid(),
+            forall|i: int| 0 <= i < replies.len() ==> replies[i].valid(),
+            requests.len() == replies.len()
+        ensures
+            ({
+                let lr = GetPacketsFromReplies(
+                    me@,
+                    requests@.map(|i,x:CRequest| x@),
+                    replies@.map(|i,x:CReply| x@));
+
+                &&& forall |i:int| 0 <= i < cr@.len() ==> cr@[i].valid()
+                &&& cr@.map(|i,x: CPacket| x@) == lr
+            })
+        decreases requests.len()
+    {
+        if requests.len()==0 {
+            let res = Vec::new();
+            assert(res@.map(|i, p:CPacket| p@) == Seq::<RslPacket>::empty());
+            res
         } else {
-            val = nc.get(&x).unwrap().clone();
+            let new_req = truncate_vec(&requests, 1, requests.len());
+            assert(new_req@.map(|i, r:CRequest| r@) == requests@.map(|i, r:CRequest| r@).drop_first());
+            let new_rep = truncate_vec(&replies, 1, replies.len());
+            assert(new_rep@.map(|i, r:CReply| r@) == replies@.map(|i, r:CReply| r@).drop_first());
+            let rest = Self::CGetPacketsFromReplies(&me, &new_req, &new_rep);
+            assert(rest@.map(|i, p:CPacket| p@) == GetPacketsFromReplies(me@, requests@.map(|i, r:CRequest| r@).drop_first(), replies@.map(|i, r:CReply| r@).drop_first()));
+            let pkt = CPacket{
+                dst: requests[0].client.clone_up_to_view(),
+                src: me.clone_up_to_view(),
+                msg: CMessage::CMessageReply{
+                    seqno_reply: requests[0].seqno,
+                    reply: replies[0].reply.clone_up_to_view()
+                }
+            };
+            let ghost spkt = LPacket{
+                dst:requests[0].client@,
+                src:me@,
+                msg:RslMessage::RslMessageReply{
+                    seqno_reply:requests[0].seqno as int,
+                    reply:replies[0].reply@,
+                }
+            };
+            assert(pkt@ == spkt);
+        
+            let mut first:Vec<CPacket> = Vec::new();
+            first.push(pkt);
+            assert(first@.map(|i, p:CPacket| p@) == seq![spkt]);
+
+            let res = concat_vecs(&first, &rest);
+            assert(res@.map(|i, p:CPacket| p@) ==  seq![spkt] + GetPacketsFromReplies(me@, requests@.map(|i, r:CRequest| r@).drop_first(), replies@.map(|i, r:CReply| r@).drop_first()));
+
+            res
         }
-        updated_cache.insert(x.clone(), val);
     }
-    // lemma_ReplyCacheLen(updated_cache);
-    updated_cache
-}
 
-#[verifier(external_body)]
-pub fn CExecutorExecute(&mut self) -> (res: OutboundPackets)
-    requires
-        old(self).valid(),
-        old(self).next_op_to_execute is COutstandingOpKnown,
-        // match self.next_op_to_execute{ COutstandingOperation::COutstandingOpKnown{v,bal} => {true}
-        // COutstandingOperation::COutstandingOpUnknown {  }=>false},
-        //Needs to be defined in Impl/common/Upperbound
-        // CLtUpperBound(s.ops_complete, s.constants.all.params.max_integer_val),
-        old(self).constants.valid()
-    ensures
-        self.valid(),
-        res.valid(),
-        LExecutorExecute(old(self)@,
-                            self@,
-                            res@)
-{
-    let batch = match self.next_op_to_execute.clone() {
-        COutstandingOperation::COutstandingOpKnown{v, bal} => v.clone(),
-        COutstandingOperation::COutstandingOpUnknown {  } => vec![]
-    };
+    // #[verifier(external_body)]
+    pub fn CClientsInReplies(replies:&Vec<CReply>) -> (m:CReplyCache)
+        requires
+            forall|i: int| 0 <= i < replies.len() ==> replies[i].valid(),
+        ensures
+            creplycache_is_valid(&m),
+            forall|c: EndPoint| m@.contains_key(c) ==> m@[c].client@ == c@,
+            forall|c: EndPoint| m@.contains_key(c) ==> (exists|req_idx: int| 0 <= req_idx < replies.len()
+                && replies[req_idx].client == c
+                && m@[c] == replies[req_idx]),
+            ({
+                let lr = LClientsInReplies(replies@.map(|i,x:CReply| x@));
+                && abstractify_creplycache(&m)==lr
+            })
+        decreases replies.len()
+    {
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        broadcast use vstd::hash_map::group_hash_map_axioms;
+        if replies.len() == 0 {
+            let res:HashMap<EndPoint, CReply> = HashMap::new();
+            assert(creplycache_is_valid(&res));
+            assert(forall|c: EndPoint| res@.contains_key(c) ==> res@[c].client@ == c@);
+            let ghost sres = abstractify_creplycache(&res);
+            assert(sres == Map::<AbstractEndPoint, Reply>::empty());
+            res
+        } else {
+            let temp = truncate_vec(&replies, 1, replies.len());
+            let mut res = Self::CClientsInReplies(&temp);
+            assert(forall|c: EndPoint| res@.contains_key(c) ==> res@[c].client@ == c@);
+            assert(forall|c: EndPoint| res@.contains_key(c) ==> (exists|req_idx: int| 0 <= req_idx < temp.len()
+                && temp[req_idx].client == c
+                && res@[c] == temp[req_idx]));
+            // assert(forall |i:int| #![trigger temp[i]] 0 <= i < temp.len() ==> 
+            //     (exists |j:int| #![trigger replies[j]] 0 <= j < replies.len() && temp[i] == replies[j]));
+            assert(temp@.map(|i, r:CReply| r@) == replies@.map(|i, r:CReply| r@).drop_first());
+            assert(abstractify_creplycache(&res) == LClientsInReplies(temp@.map(|i, r:CReply| r@)));
 
-    let (new_states, replies) = CHandleRequestBatch(self.app, batch.clone());
-    let new_state = new_states[new_states.len()-1];
+            assert(forall |i:EndPoint| res@.contains_key(i) ==> i.abstractable() && res@[i].abstractable());
+            let client = replies[0].client.clone_up_to_view();
+            let rep = replies[0].clone_up_to_view();
+            assert(client.abstractable());
+            assert(rep.abstractable());
+            assert(rep.client@ == client@);
+            res.insert(client, rep);
 
-    let clients = Self::CClientsInReplies(replies.clone());
+            // all these assumptions are caused by HashMap's insert has not been verified
+            assume(abstractify_creplycache(&res) == LClientsInReplies(temp@.map(|i, r:CReply| r@)).insert(replies[0].client@, replies[0]@));
 
-    let x = match self.next_op_to_execute.clone() {
-        COutstandingOperation::COutstandingOpKnown { v, bal } => bal,
-        COutstandingOperation::COutstandingOpUnknown {  } => CBallot{seqno: 0, proposer_id:0}
-    };
-    let new_max_bal_reflected = if CBalLeq(&self.max_bal_reflected, &x) {
-        x
-    } else {
-        self.max_bal_reflected
-    };
-
-        self.app= new_state.clone();
-        self.ops_complete+= 1;
-        self.max_bal_reflected= new_max_bal_reflected;
-        self.next_op_to_execute= COutstandingOperation::COutstandingOpUnknown{   };
-        self.reply_cache= Self::CUpdateNewCache(self.reply_cache.clone(), replies.clone());
-
-    let outbound_packets = PacketSequence{s: Self::CGetPacketsFromReplies(
-        self.constants.all.config.replica_ids[self.constants.my_index as usize].clone(),
-        batch,
-        replies
-    )};
-
-    outbound_packets
-}
-
-#[verifier(external_body)]
-pub fn CExecutorProcessAppStateSupply(
-    &mut self,
-    inp: CPacket
-)
-    requires
-        old(self).valid(),
-        inp.valid(),
-        // (if let CMessage::CMessageAppStateSupply{bal_state_supply,
-        //     opn_state_supply,
-        //     app_state,
-        //     reply_cache} = inp.msg{ if opn_state_supply > old(self).ops_complete{true} else {false}} else {false}),
-        inp.msg is CMessageAppStateSupply,
-        inp.msg->opn_state_supply > old(self).ops_complete,
-        (exists |i: int| 0<= i < old(self).constants.all.config.replica_ids.len() ==> old(self).constants.all.config.replica_ids[i] == &inp.src)
-    ensures
-        //fresh(reply_cache_mutable)
-        self.valid(),
-        LExecutorProcessAppStateSupply(old(self)@,
-        self@,
-        inp@)
-{
-    // let m = inp.msg;
-    // let mut res = Self::CExecutorInit(self.constants.clone());
-    // // if let CMessage::CMessageAppStateSupply { bal_state_supply, opn_state_supply, app_state, reply_cache } = m {
-
-    //         self.app= m.clone()->app_state;
-    //         self.ops_complete= m.clone()->opn_state_supply;
-    //         self.max_bal_reflected= m.clone()->bal_state_supply;
-    //         self.next_op_to_execute= COutstandingOperation::COutstandingOpUnknown{};
-    //         self.reply_cache= m.clone()->reply_cache;
-    // // }
-
-    let m = inp.msg.clone();
-    match m {
-        CMessage::CMessageAppStateSupply {
-            bal_state_supply,
-            opn_state_supply,
-            app_state,
-            reply_cache,
-        } => {
-            self.app = app_state;
-            self.ops_complete = opn_state_supply;
-            self.max_bal_reflected = bal_state_supply;
-            self.next_op_to_execute = COutstandingOperation::COutstandingOpUnknown {};
-            self.reply_cache = reply_cache;
+            assume(forall|c: EndPoint| res@.contains_key(c) ==> (exists|req_idx: int| 0 <= req_idx < temp.len()
+                && temp[req_idx].client == c
+                && res@[c] == temp[req_idx]));
+            assert(forall|c: EndPoint| res@.contains_key(c) ==> res@[c].client@ == c@);
+            assert(creplycache_is_abstractable(&res));
+            assert(creplycache_is_valid(&res));
+            res
         }
-        _ => {
-            // Unreachable due to precondition: `inp.msg is CMessageAppStateSupply`
+    }
+
+    #[verifier(external_body)]
+    pub fn CUpdateNewCache(c:&CReplyCache, replies:&Vec<CReply>) -> (c_prime:CReplyCache)
+        requires
+            creplycache_is_valid(c),
+            forall|i: int| 0 <= i < replies.len() ==> replies[i].valid()
+        ensures
+            creplycache_is_valid(&c_prime),
+            UpdateNewCache(
+                abstractify_creplycache(c),
+                abstractify_creplycache(&c_prime),
+                replies@.map(|i,x:CReply| x@)
+            )
+    {
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        broadcast use vstd::hash_map::group_hash_map_axioms;
+        broadcast use crate::common::native::io_s::axiom_endpoint_key_model;
+
+        let nc = Self::CClientsInReplies(&replies);
+        let mut updated_cache = HashMap::<EndPoint, CReply>::new();
+        
+        let c_keys = c.keys();
+        assert(c_keys@.0 == 0);
+        assert(c_keys@.1.to_set() =~= c@.dom());
+
+        for k in iter:c_keys 
+            invariant
+                creplycache_is_valid(c),
+                creplycache_is_valid(&updated_cache),
+        {
+            broadcast use vstd::std_specs::hash::group_hash_axioms;
+            broadcast use vstd::hash_map::group_hash_map_axioms;
+            let v = c.get(k);
+            match v{
+                Some(v) => {
+                    assert(k.abstractable());
+                    assert(v.valid());
+                    updated_cache.insert(k.clone_up_to_view(), v.clone_up_to_view());
+                }
+                None => {
+
+                }
+            }
         }
-}
 
-}
+        let nc_keys = nc.keys();
+        assert(nc_keys@.0 == 0);
+        assert(nc_keys@.1.to_set() =~= nc@.dom());
+        for k in iter:nc_keys 
+            invariant
+                creplycache_is_valid(&nc),
+                creplycache_is_valid(&updated_cache),
+        {
+            broadcast use vstd::std_specs::hash::group_hash_axioms;
+            broadcast use vstd::hash_map::group_hash_map_axioms;
+            let v = nc.get(k);
+            match v{
+                Some(v) => {
+                    assert(k.abstractable());
+                    assert(v.valid());
+                    updated_cache.insert(k.clone_up_to_view(), v.clone_up_to_view());
+                }
+                None => {
 
-#[verifier(external_body)]
-pub fn CExecutorProcessAppStateRequest(
-    &mut self,
-    inp: CPacket,
-    reply_cache: HashMap::<EndPoint, CReply>
-) -> (res: OutboundPackets)
-    requires
-        old(self).valid(),
-        inp.valid(),
-        // if let CMessage::CMessageAppStateRequest { bal_state_req, opn_state_req } =  inp.msg {
-        //      true
-        // } else {false},
-        inp.msg is CMessageAppStateRequest,
-        (exists |i: int| 0<= i < old(self).constants.all.config.replica_ids.len() ==> old(self).constants.all.config.replica_ids[i] == &inp.src)
-    ensures
-        self.valid(),
-        res.valid(),
-        LExecutorProcessAppStateRequest(old(self)@, self@,
-        inp@,
-        res@)
-{
-    // let m = inp.msg;
-    // // if let CMessage::CMessageAppStateRequest { bal_state_req, opn_state_req } = m{
-    //     if (CBalLeq(&self.max_bal_reflected, &m.clone()->bal_state_req)
-    //     && self.ops_complete >= m.clone()->opn_state_req
-    //     && self.constants.clone().valid())
-    // {
-    //     let outbound_packets = PacketSequence{
-    //         s: vec![CPacket{
-    //             dst: inp.src,
-    //             src: self.constants.all.config.replica_ids[self.constants.my_index as usize].clone(),
-    //             msg: CMessage::CMessageAppStateSupply{
-    //                 bal_state_supply: self.max_bal_reflected,
-    //                 opn_state_supply: self.ops_complete,
-    //                 app_state: self.app,
-    //                 reply_cache: self.reply_cache.clone(),
-    //             }
-    //         }]
-    //     };
-    //     outbound_packets
-    // } else {
-    //     PacketSequence{s: vec![]}
-    // }
-    // // }else{
-    // //     PacketSequence{s: vec![]}
+                }
+            }
+        }
+        updated_cache
+    }
 
-    // // }
+    #[verifier(external_body)]
+    pub fn CExecutorExecute(&mut self) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+            old(self).next_op_to_execute is COutstandingOpKnown,
+            LtUpperBound(old(self)@.ops_complete, old(self)@.constants.all.params.max_integer_val),
+            LReplicaConstantsValid(old(self)@.constants)
+        ensures
+            self.valid(),
+            res.valid(),
+            LExecutorExecute(old(self)@,
+                                self@,
+                                res@)
+    {
+        match &self.next_op_to_execute {
+            COutstandingOperation::COutstandingOpKnown{v, bal} => {
+                let batch = clone_request_batch_up_to_view(&v);
+                let x = bal.clone_up_to_view();
+                let (new_states, replies) = CHandleRequestBatch(&self.app, &batch);
+                let new_state = new_states[new_states.len()-1];
 
-    let m = inp.msg.clone();
-
-    match m {
-        CMessage::CMessageAppStateRequest { bal_state_req, opn_state_req } => {
-            if CBalLeq(&self.max_bal_reflected, &bal_state_req)
-                && self.ops_complete >= opn_state_req
-                && self.constants.clone().valid()
-            {
-                let outbound_packets = PacketSequence {
-                    s: vec![CPacket {
-                        dst: inp.src,
-                        src: self.constants.all.config.replica_ids[self.constants.my_index as usize].clone(),
-                        msg: CMessage::CMessageAppStateSupply {
-                            bal_state_supply: self.max_bal_reflected,
-                            opn_state_supply: self.ops_complete,
-                            app_state: self.app,
-                            reply_cache: self.reply_cache.clone(),
-                        },
-                    }],
+                // let clients = Self::CClientsInReplies(&replies);
+                let new_max_bal_reflected = if CBalLeq(&self.max_bal_reflected, &x) {
+                    x
+                } else {
+                    self.max_bal_reflected
                 };
-                outbound_packets
-            } else {
+
+                self.app= new_state;
+                self.ops_complete = self.ops_complete + 1;
+                self.max_bal_reflected = new_max_bal_reflected;
+                self.next_op_to_execute = COutstandingOperation::COutstandingOpUnknown{};
+                self.reply_cache = Self::CUpdateNewCache(&self.reply_cache, &replies);
+                let pkt_vec = Self::CGetPacketsFromReplies(
+                    &self.constants.all.config.replica_ids[self.constants.my_index as usize],
+                    &batch,
+                    &replies
+                );
+                assert(forall |i:int| 0 <= i < pkt_vec.len() ==> pkt_vec@[i].valid());
+                let outpackets = PacketSequence{s: pkt_vec};
+                outpackets
+            }
+            COutstandingOperation::COutstandingOpUnknown {  } => {
+                let mut pkt_vec: Vec<CPacket> = Vec::new();
+                let outpackets = OutboundPackets::PacketSequence{
+                    s:pkt_vec,
+                };
+                outpackets
+            }
+        }
+    }
+
+    // #[verifier(external_body)]
+    pub fn CExecutorProcessAppStateSupply(
+        &mut self,
+        inp: CPacket
+    )
+        requires
+            old(self).valid(),
+            inp.valid(),
+            inp.msg is CMessageAppStateSupply,
+            inp.msg->opn_state_supply > old(self).ops_complete,
+        ensures
+            self.valid(),
+            LExecutorProcessAppStateSupply(
+                old(self)@,
+                self@,
+                inp@)
+    {
+        let m = inp.msg;
+        match m {
+            CMessage::CMessageAppStateSupply {
+                bal_state_supply,
+                opn_state_supply,
+                app_state,
+                reply_cache,
+            } => {
+                self.app = app_state;
+                self.ops_complete = opn_state_supply;
+                self.max_bal_reflected = bal_state_supply;
+                self.next_op_to_execute = COutstandingOperation::COutstandingOpUnknown {};
+                self.reply_cache = reply_cache;
+            }
+            _ => {
+            }
+        }
+
+    }
+
+    // #[verifier(external_body)]
+    pub fn CExecutorProcessAppStateRequest(
+        &mut self,
+        inp: CPacket,
+        reply_cache:HashMap::<EndPoint, CReply>
+    ) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+            inp.valid(),
+            inp.msg is CMessageAppStateRequest,
+        ensures
+            self.valid(),
+            res.valid(),
+            LExecutorProcessAppStateRequest(
+                old(self)@, 
+                self@,
+                inp@,
+                res@)
+    {
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        broadcast use vstd::hash_map::group_hash_map_axioms;
+        let ghost ss = old(self)@;
+        let ghost sp = inp@;
+
+        let m = inp.msg;
+
+        match m {
+            CMessage::CMessageAppStateRequest { bal_state_req, opn_state_req } => {
+                if contains(&self.constants.all.config.replica_ids, &inp.src)
+                    && CBalLeq(&self.max_bal_reflected, &bal_state_req)
+                    && self.ops_complete >= opn_state_req
+                    && CReplicaConstants::CReplicaConstantsValid(&self.constants)
+                {
+                    assert(ss.constants.all.config.replica_ids.contains(sp.src));
+                    assert(BalLeq(ss.max_bal_reflected, sp.msg->bal_state_req));
+                    assert(ss.ops_complete >= sp.msg->opn_state_req);
+                    assert(LReplicaConstantsValid(ss.constants));
+                    let msg = CMessage::CMessageAppStateSupply {
+                        bal_state_supply: self.max_bal_reflected,
+                        opn_state_supply: self.ops_complete,
+                        app_state: self.app,
+                        reply_cache: clone_creply_cache_up_to_view(&self.reply_cache),
+                    };
+                    let ghost smsg = RslMessage::RslMessageAppStateSupply{
+                        bal_state_supply:ss.max_bal_reflected,
+                        opn_state_supply:ss.ops_complete,
+                        app_state:ss.app,
+                        reply_cache:ss.reply_cache
+                    };
+                    assert(msg.valid());
+                    assert(msg@ == smsg);
+                    let pkt = CPacket {
+                        dst: inp.src,
+                        src: self.constants.all.config.replica_ids[self.constants.my_index as usize].clone_up_to_view(),
+                        msg: msg,
+                    };
+                    let ghost spkt = LPacket{
+                        dst:sp.src,
+                        src:ss.constants.all.config.replica_ids[ss.constants.my_index],
+                        msg:smsg,
+                    };
+                    assert(pkt.valid());
+                    assert(pkt@ == spkt);
+                    let pkt_vec = vec![pkt];
+                    let outpackets = OutboundPackets::PacketSequence {
+                        s: pkt_vec,
+                    };
+                    let ghost pkt_seq = seq![spkt];
+                    assert(pkt_vec@.map(|i, p:CPacket| p@) == pkt_seq);
+                    assert(ss == self@);
+                    assert(LExecutorProcessAppStateRequest(
+                        ss, 
+                        self@,
+                        sp,
+                        outpackets@));
+                        outpackets
+                } else {
+                    let mut pkt_vec: Vec<CPacket> = Vec::new();
+                    let outpackets = OutboundPackets::PacketSequence{
+                        s:pkt_vec,
+                    };
+                    assert(pkt_vec@.map(|i, p:CPacket| p@)  == Seq::<RslPacket>::empty());
+                    assert(LExecutorProcessAppStateRequest(
+                        ss, 
+                        self@,
+                        sp,
+                        outpackets@));
+                    outpackets
+                }
+            }
+            _ => {
+                // Unreachable due to precondition: `inp.msg is CMessageAppStateRequest`
                 PacketSequence { s: vec![] }
             }
         }
-        _ => {
-            // Unreachable due to precondition: `inp.msg is CMessageAppStateRequest`
-            PacketSequence { s: vec![] }
-        }
-}
 
 
-}
+    }
 
-#[verifier(external_body)]
-pub fn CExecutorProcessStartingPhase2(
-    &mut self,
-    inp: CPacket
-) -> (res: OutboundPackets)
-    requires
-        old(self).valid(),
-        inp.valid(),
-        // if let CMessage::CMessageStartingPhase2{
-        //     bal_2,
-        //     logTruncationPoint_2,
-        // } = inp.msg {true} else {false},
-        inp.msg is CMessageStartingPhase2
-    ensures
-        self.valid(),
-        res.valid(),
-        LExecutorProcessStartingPhase2(old(self)@, self@,
-        inp@,
-        res@)
+    // #[verifier(external_body)]
+    pub fn CExecutorProcessStartingPhase2(
+        &mut self,
+        inp: CPacket
+    ) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+            inp.valid(),
+            inp.msg is CMessageStartingPhase2
+        ensures
+            self.valid(),
+            res.valid(),
+            LExecutorProcessStartingPhase2(
+                old(self)@, 
+                self@,
+                inp@,
+                res@)
     {
-        // let mut log_tp = 0;
-        // let mut bal = CBallot { seqno: 0, proposer_id: 0 };
-        // // if let CMessage::CMessageStartingPhase2{
-        // //     bal_2,
-        // //     logTruncationPoint_2,
-        // // } = inp.msg{
-        // //     log_tp = logTruncationPoint_2;
-        // //     bal = bal_2;
-        // // }
-        // log_tp = inp.msg.clone()->logTruncationPoint_2;
-        // bal = inp.msg.clone()->bal_2;
-
-        // if self.constants.all.config.replica_ids.contains(&inp.src)
-        // && log_tp > self.ops_complete{
-        //      OutboundPackets::Broadcast{broadcast: CBroadcast::BuildBroadcastToEveryone(self.constants.all.config.clone(), self.constants.my_index, CMessage::CMessageAppStateRequest{bal_state_req: bal,opn_state_req: log_tp})}
-        // }
-        //  else {
-        // return Broadcast{broadcast: CBroadcast::CBroadcastNop{}};}
-
-            match inp.msg.clone() {
+            match inp.msg {
                 CMessage::CMessageStartingPhase2 { bal_2, logTruncationPoint_2 } => {
                     let log_tp = logTruncationPoint_2;
                     let bal = bal_2;
 
-                    if self.constants.all.config.replica_ids.contains(&inp.src)
+                    if contains(&self.constants.all.config.replica_ids, &inp.src)
                         && log_tp > self.ops_complete
                     {
                         OutboundPackets::Broadcast {
                             broadcast: CBroadcast::BuildBroadcastToEveryone(
-                                self.constants.all.config.clone(),
+                                self.constants.all.config.clone_up_to_view(),
                                 self.constants.my_index,
                                 CMessage::CMessageAppStateRequest {
                                     bal_state_req: bal,
@@ -527,82 +603,108 @@ pub fn CExecutorProcessStartingPhase2(
     }
 
 
-    #[verifier(external_body)]
-    pub fn CExecutorProcessRequest(self,inp: CPacket) -> (res: OutboundPackets)
-    requires
-        self.valid(),
-        inp.valid(),
-        // ({
-        //  if let CMessage::CMessageRequest { seqno_req, val } = inp.msg {
-        //     if self.reply_cache@[inp.src].seqno >= seqno_req {true} else {false}
-        //     // if val.seqno >= seqno_req {true} else {false}
-        // } else {false}}),
-        inp.msg is CMessageRequest,
-        inp.msg->seqno_req <= self.reply_cache@[inp.src].seqno,
-        self.reply_cache@.contains_key(inp.src),
-    ensures
-        res.valid(),
-        LExecutorProcessRequest(self.view(),
-        inp.view(),
-        res.view())
+    // #[verifier(external_body)]
+    pub fn CExecutorProcessRequest(&mut self,inp: CPacket) -> (res: OutboundPackets)
+        requires
+            old(self).valid(),
+            inp.valid(),
+            inp.msg is CMessageRequest,
+            old(self).reply_cache@.contains_key(inp.src),
+            old(self).reply_cache@[inp.src] is CReply,
+            inp.msg->seqno_req <= old(self).reply_cache@[inp.src].seqno,
+        ensures
+            self.valid(),
+            res.valid(),
+            old(self)@ == self@,
+            LExecutorProcessRequest(
+                old(self)@,
+                inp@,
+                res@)
     {
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        broadcast use vstd::hash_map::group_hash_map_axioms;
+        let ghost ss = old(self)@;
+        let ghost sp = inp@;
+        match inp.msg {
+            CMessage::CMessageRequest { seqno_req, val } => {
+                let v = self.reply_cache.get(&inp.src);
+                match v {
+                    Some(v) => {
+                        broadcast use vstd::std_specs::hash::group_hash_axioms;
+                        broadcast use crate::common::native::io_s::axiom_endpoint_key_model;
+                        assert(v == self.reply_cache@[inp.src]);
+                        assume(v@ == ss.reply_cache[sp.src]); // here need a lemma to prove the get operation of hashmap refines get of map
+                        if seqno_req == v.seqno && CReplicaConstants::CReplicaConstantsValid(&self.constants)
+                        {
+                            assert(sp.msg->seqno_req == ss.reply_cache[sp.src].seqno);
+                            assert(LReplicaConstantsValid(ss.constants));
+                            let msg = CMessage::CMessageReply{
+                                seqno_reply:v.seqno,
+                                reply:v.reply.clone_up_to_view(),
+                            };
+                            let ghost r = ss.reply_cache[sp.src];
+                            let ghost smsg = RslMessage::RslMessageReply{
+                                seqno_reply:r.seqno,
+                                reply:r.reply
+                            };
+                            assert(msg@ == smsg);
 
-    //     let mut seqno = 0;
+                            let pkt = CPacket{
+                                src: self.constants.all.config.replica_ids[self.constants.my_index as usize].clone_up_to_view(), 
+                                dst: v.client.clone_up_to_view(),
+                                msg: msg, 
+                            };
 
-    //     // if let CMessage::CMessageRequest { seqno_req, val } = inp.msg {seqno = seqno_req;}
-    //     seqno = inp.msg->seqno_req;
+                            let ghost spkt = LPacket{
+                                    dst:r.client,
+                                    src:ss.constants.all.config.replica_ids[ss.constants.my_index],
+                                    msg:smsg,
+                                };
+                            assert(pkt@ == spkt);
 
-    //     let condition1 = if let Some(reply) = self.reply_cache.get(&inp.src){ if reply.seqno == seqno {true} else {false}} else {false};
+                            let mut pkt_vec: Vec<CPacket> = Vec::new();
 
-    //     if condition1 && self.constants.clone().valid(){
+                            pkt_vec.push(pkt);
 
-    //         let r = self.reply_cache.get(&inp.src).unwrap();
-    //         let pkt = PacketSequence{s: vec![CPacket{
-    //             dst:r.client.clone(),
-    //             src:self.constants.all.config.replica_ids[self.constants.my_index as usize].clone(),
-    //             msg: CMessage::CMessageReply{
-    //                 seqno_reply: r.seqno,
-    //                 reply: r.reply.clone()
-    //             }
-    //         }]}	;
-    //         pkt
-    //     } else {
-    //             OutboundPackets::PacketSequence{s:vec![]}
-    // }
+                            let ghost pkt_seq = seq![spkt];
 
-    match inp.msg.clone() {
-        CMessage::CMessageStartingPhase2 { bal_2, logTruncationPoint_2 } => {
-            let log_tp = logTruncationPoint_2;
-            let bal = bal_2;
-
-            if self.constants.all.config.replica_ids.contains(&inp.src)
-                && log_tp > self.ops_complete
-            {
-                OutboundPackets::Broadcast {
-                    broadcast: CBroadcast::BuildBroadcastToEveryone(
-                        self.constants.all.config.clone(),
-                        self.constants.my_index,
-                        CMessage::CMessageAppStateRequest {
-                            bal_state_req: bal,
-                            opn_state_req: log_tp,
-                        },
-                    ),
+                            assert(pkt_vec@.map(|i, p:CPacket| p@) == pkt_seq);
+                            let outpackets = OutboundPackets::PacketSequence{
+                                s:pkt_vec,
+                            };
+                            assert(outpackets.valid());
+                            assert(LExecutorProcessRequest(ss, sp, outpackets@));
+                            outpackets
+                        } else {
+                            let mut pkt_vec: Vec<CPacket> = Vec::new();
+                            let outpackets = OutboundPackets::PacketSequence{
+                                s:pkt_vec,
+                            };
+                            assert(outpackets.valid());
+                            assert(pkt_vec@.map(|i, p:CPacket| p@)  == Seq::<RslPacket>::empty());
+                            assert(LExecutorProcessRequest(ss, sp, outpackets@));
+                            outpackets
+                        }
+                    }
+                    None => {
+                        let mut pkt_vec: Vec<CPacket> = Vec::new();
+                        let outpackets = OutboundPackets::PacketSequence{
+                            s:pkt_vec,
+                        };
+                        assert(outpackets.valid());
+                        assert(LExecutorProcessRequest(ss, sp, outpackets@));
+                        outpackets
+                    }
                 }
-            } else {
+            }
+            _ => {
                 OutboundPackets::Broadcast {
                     broadcast: CBroadcast::CBroadcastNop {},
                 }
             }
         }
-        _ => {
-            // Unreachable due to `inp.msg is CMessageStartingPhase2`
-            OutboundPackets::Broadcast {
-                broadcast: CBroadcast::CBroadcastNop {},
-            }
-        }
-    }
 
-}
+    }
 
 }
 

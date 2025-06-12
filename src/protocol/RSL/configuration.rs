@@ -48,11 +48,4 @@ verus! {
     {
         FindIndexInSeq(c.replica_ids, id)
     }
-
-    // pub proof fn lemma_GetReplicaIndex(id: AbstractEndPoint, c: LConfiguration)
-    //     requires c.replica_ids.contains(id)
-    //     ensures 0 <= GetReplicaIndex(id, c) < c.replica_ids.len() && c.replica_ids.index(GetReplicaIndex(id, c)) == id
-    // {
-    //     // 证明 FindIndexInSeq 的性质
-    // }
 }

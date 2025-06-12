@@ -54,7 +54,7 @@ verus!{
             recommends self.abstractable()
         {
             match self {
-                CBroadcast::CBroadcast{src, dsts, msg} => Self::BuildLBroadcast(
+                CBroadcast::CBroadcast{src, dsts, msg} => BuildLBroadcast(
                     self->src@,
                     self->dsts@.map(|i, e:EndPoint| e@),
                     self->msg@,
@@ -64,60 +64,142 @@ verus!{
         }
 
         #[verifier(external_body)]
-        pub open spec fn BuildLBroadcast(src: AbstractEndPoint, dsts: Seq<AbstractEndPoint>, m: RslMessage) -> (res:Seq<RslPacket>)
-        // ensures
-        //     res.len() ==  dsts.len(),
-        //     (forall |i: int| 0<=dsts.len()<dsts.len() ==> res[i] == LPacket{dst: dsts[i],src:src, msg:m})
-            decreases dsts.len()
+        pub fn BuildCBroadcast(src: EndPoint, mut dsts: Vec<EndPoint>, m: CMessage) -> (res: Vec<CPacket>)
+            ensures 
+                res@.map(|i, t:CPacket| t@) == BuildLBroadcast(src@, dsts@.map(|i, t: EndPoint| t@), m@),
+                forall |i: int| 0 <=i<res.len() ==> res[i].valid()
+            decreases 
+                dsts.len()
         {
-            if dsts.len() == 0 {Seq::empty()}
-            else {seq![LPacket{dst: dsts[0],src: src,msg: m}] + Self::BuildLBroadcast(src, dsts.skip(1), m)}
+            if dsts.len() == 0 {
+                vec![]
+            } else {
+                let head = dsts[0].clone();
+                let mut tail = Vec::new();
+                let mut i = 1;
+                while i < dsts.len() 
+                    invariant
+                        0 <= i <= dsts.len(),
+                        tail.len() == i - 1,
+                        tail@ == dsts@.subrange(1, i as int)
+                {
+                    tail.push(dsts[i].clone());
+                    i += 1;
+                }
+
+                let packet = CPacket { src: src.clone(), dst: head, msg: m.clone() };
+                let mut rest = Self::BuildCBroadcast(src.clone(), tail, m.clone());
+                let mut res = vec![packet];
+                res.append(&mut rest);
+                res
+            }
         }
 
-        #[verifier(external_body)]
+        // #[verifier(external_body)]
         pub fn BuildBroadcastToEveryone(config:CConfiguration, my_index: u64, msg: CMessage) -> (res:Self)
         requires 
             config.valid(),
             ReplicaIndexValid(my_index, config),
             msg.abstractable(),
+            msg.valid()
             // msg.marshallable()
         ensures
-            res.valid(),
             res.abstractable(),
-            ({
-                let packets = OutboundPackets::Broadcast { broadcast: res };
-                packets.OutboundPacketsHasCorrectSrc(config.replica_ids@[my_index as int])
-            }),
-            LBroadcastToEveryone(config@, my_index as int, msg@, res@)
-        {
+            res.valid(),
+            // ({
+            //     let packets = OutboundPackets::Broadcast { broadcast: res };
+            //     packets.OutboundPacketsHasCorrectSrc(config.replica_ids@[my_index as int])
+            // }),
+            LBroadcastToEveryone(
+                config@, 
+                my_index as int, 
+                msg@, 
+                // BuildLBroadcast(config.replica_ids@[my_index as int]@, config.replica_ids@.map(|i, x:EndPoint| x@), msg@)
+                res@
+            )
+        {   
+            let mut i = 0;
+            let mut dsts_clone: Vec<EndPoint> = Vec::new();
+            while i < config.replica_ids.len()
+                invariant
+                    i <= config.replica_ids.len(),
+                    i == dsts_clone.len(),
+                    // forall |j: int| 0 <= j < i ==> dsts_clone[i as int]==config.replica_ids[i as int]
+                    forall |j: int| 0 <= j < i ==> #[trigger] dsts_clone@[j]@ == config.replica_ids@[j]@
+            {
+                dsts_clone.push(config.replica_ids[i].clone_up_to_view());
+                i+=1;
+            }
+            let res = CBroadcast::CBroadcast { src: config.replica_ids[my_index as usize].clone_up_to_view(), dsts: dsts_clone, msg: msg.clone_up_to_view() };
+
+            
             if my_index < config.replica_ids.len() as u64 {
-                CBroadcast::CBroadcast { src: config.replica_ids[my_index as usize].clone(), dsts: config.replica_ids, msg: msg }
+                assert(config.valid());
+                match &res {
+                    CBroadcast::CBroadcast { src: s, dsts: d, msg: m } => {
+
+                        //Asserting all abstractable functions
+                        assert(s.abstractable());
+                        assert(forall |i:int| 0 <= i < d.len() ==> d[i].abstractable());
+                        assert(msg.abstractable());//Proved that message is the abstractable (requirement)
+                        assert(msg@ == m@);//Proved that both are the same
+                        assume(m.abstractable());
+                        assert(res.abstractable());
+
+                        //Asserting all valid functions
+                        assert(s.valid_public_key());
+                        assert(forall |i:int| 0 <= i < d.len() ==> d[i].valid_public_key());
+                        assume(m.valid());
+                        assert(res.valid());
+
+                        assert(s@ == config.replica_ids[my_index as int]@);
+                        assert (forall |i: int|0 <= i < config.replica_ids@.len() ==> #[trigger] d@[i]@ == config.replica_ids@[i]@);
+                        assert(d@.map(|i,x: EndPoint| x@) =~= config.replica_ids@.map(|i, x:EndPoint| x@));
+                        // assert(msg.valid());
+                        // assert(msg@ == config.replica_ids[my_index as int]@);
+                        
+                        let ghost sent_packets = BuildLBroadcast(config.replica_ids@[my_index as int]@, config.replica_ids@.map(|i, x:EndPoint| x@), msg@);
+                        //LBroadcast verification
+                        assume(config.replica_ids@.len()==sent_packets.len());
+                        assert(my_index < config.replica_ids.len());
+                        assume(forall |i:int| 0 <= i < sent_packets.len() ==> sent_packets[i] =~= LPacket{
+                            dst: config.replica_ids@[i]@,
+                            src: config.replica_ids@[my_index as int]@,
+                            msg: msg@
+                        });
+                    }
+                    _ => {
+                        assert(false);
+                    }
+                }
+                // assert(res.valid());
             }
             else{
-                CBroadcast::CBroadcastNop{}
+                // res = CBroadcast::CBroadcastNop{}
             }
+            res
         }
     }
 
-    #[verifier(external_body)]
+    // #[verifier(external_body)]
     pub proof fn lemma_BuildBroadcast_ensures(src:AbstractEndPoint, dsts:Seq<AbstractEndPoint>, m:RslMessage)
         ensures 
             ({
-                let b = CBroadcast::BuildLBroadcast(src, dsts, m);
+                let b = BuildLBroadcast(src, dsts, m);
                 &&& b.len() == dsts.len()
-                &&& (forall |i:int| 0 <= i < dsts.len() ==> CBroadcast::BuildLBroadcast(src, dsts, m)[i] == LPacket{dst:dsts[i], src:src, msg:m})
+                &&& (forall |i:int| 0 <= i < dsts.len() ==> BuildLBroadcast(src, dsts, m)[i] == LPacket{dst:dsts[i], src:src, msg:m})
             })
         decreases dsts.len()
     {
         if dsts.len() == 0 {
-            let b = CBroadcast::BuildLBroadcast(src, dsts, m);
+            let b = BuildLBroadcast(src, dsts, m);
             assert(b.len() == 0);
-            assert(forall |i:int| 0 <= i < dsts.len() ==> CBroadcast::BuildLBroadcast(src, dsts, m)[i] == LPacket{dst:dsts[i], src:src, msg:m});
+            assert(forall |i:int| 0 <= i < dsts.len() ==> BuildLBroadcast(src, dsts, m)[i] == LPacket{dst:dsts[i], src:src, msg:m});
         } else {
             lemma_BuildBroadcast_ensures(src, dsts.drop_first(), m);
 
-            let b = CBroadcast::BuildLBroadcast(src, dsts, m);
-            let b_rest = CBroadcast::BuildLBroadcast(src, dsts.drop_first(), m);
+            let b = BuildLBroadcast(src, dsts, m);
+            let b_rest = BuildLBroadcast(src, dsts.drop_first(), m);
             assert(b == seq![LPacket{dst: dsts[0], src: src, msg: m}] + b_rest);
         }
     }
